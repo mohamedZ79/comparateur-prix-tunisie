@@ -4,15 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Méta-Comparateur de Prix Tunisie</title>
-    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- FontAwesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body class="bg-slate-50 min-h-screen text-slate-800 p-4 md:p-8">
     <div class="max-w-7xl mx-auto">
         
-        <!-- En-tête -->
+        <!-- Header -->
         <header class="text-center my-6">
             <h1 class="text-4xl md:text-5xl font-black text-slate-900 tracking-tight">
                 Comparateur de Prix <span class="text-red-600">Tunisie</span> 🇹🇳
@@ -25,7 +23,7 @@
             <input 
                 type="text" 
                 id="search-input" 
-                placeholder="Nom de produit, marque ou référence (ex: BRE275, Tramontina, S23, SVR...)" 
+                placeholder="Nom de produit, marque ou modèle (ex: Samsung S23, Tramontina, SVR...)" 
                 class="flex-1 px-4 py-3 outline-none text-lg text-slate-800" 
                 required
             >
@@ -44,10 +42,10 @@
             <button onclick="filterCategory('Parapharmacie')" class="cat-btn bg-white hover:bg-gray-100 text-slate-700 text-xs font-bold px-4 py-2 rounded-full border transition">Parapharmacie & Beauté</button>
         </div>
 
-        <!-- Animation de chargement -->
+        <!-- Animation de chargement avec texte d'état -->
         <div id="loader" class="hidden text-center py-16">
             <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-red-600 border-t-transparent"></div>
-            <p class="text-slate-600 font-semibold mt-4 text-base">Interrogation simultanée des boutiques en direct...</p>
+            <p id="loader-text" class="text-slate-600 font-semibold mt-4 text-base">Interrogation simultanée des boutiques en direct...</p>
         </div>
 
         <!-- Entête des résultats -->
@@ -59,7 +57,7 @@
         <!-- Grille des cartes produits -->
         <div id="results" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"></div>
 
-        <!-- État vide si aucun produit trouvé -->
+        <!-- État vide -->
         <div id="empty-state" class="hidden text-center py-16">
             <i class="fa-solid fa-box-open text-5xl text-gray-300 mb-3"></i>
             <p class="text-gray-500 text-lg font-medium">Aucun produit trouvé pour cette recherche.</p>
@@ -67,9 +65,13 @@
     </div>
 
     <script>
+        // URL de production sur Render
+        const API_BASE_URL = "https://api-comparateur-tunisie.onrender.com";
+
         const form = document.getElementById('search-form');
         const input = document.getElementById('search-input');
         const loader = document.getElementById('loader');
+        const loaderText = document.getElementById('loader-text');
         const results = document.getElementById('results');
         const resultsHeader = document.getElementById('results-header');
         const totalCount = document.getElementById('total-count');
@@ -83,15 +85,24 @@
             const query = input.value.trim();
             if (!query) return;
 
-            // Réinitialisation de l'affichage
             loader.classList.remove('hidden');
+            loaderText.textContent = "Interrogation simultanée des boutiques en direct...";
             results.innerHTML = '';
             resultsHeader.classList.add('hidden');
             emptyState.classList.add('hidden');
             categoryFilters.classList.add('hidden');
 
+            // Message préventif au cas où le serveur se réveille
+            const wakeUpTimer = setTimeout(() => {
+                loaderText.textContent = "⚡ Réveil du serveur Cloud en cours, patientez quelques secondes...";
+            }, 5000);
+
             try {
-                const res = await fetch(`/api/compare?q=${encodeURIComponent(query)}`);
+                const res = await fetch(`${API_BASE_URL}/api/compare?q=${encodeURIComponent(query)}`);
+                clearTimeout(wakeUpTimer);
+
+                if (!res.ok) throw new Error("Erreur serveur");
+
                 const data = await res.json();
                 loader.classList.add('hidden');
 
@@ -107,8 +118,9 @@
                 renderProducts(allProducts);
 
             } catch (err) {
+                clearTimeout(wakeUpTimer);
                 loader.classList.add('hidden');
-                alert("Erreur de connexion avec l'API. Vérifiez que votre serveur FastAPI (Uvicorn) tourne bien dans le terminal.");
+                alert("Le serveur Cloud est en cours de réveil. Veuillez recliquer sur 'Comparer' dans quelques secondes.");
             }
         });
 
