@@ -1,0 +1,47 @@
+name: Scraper Health Check
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # S'exécute automatiquement toutes les 6h
+  workflow_dispatch:         # Permet de le lancer manuellement à tout moment
+  push:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Smoke test de tous les scrapers HTTP
+        run: |
+          python - <<'EOF'
+          import asyncio, sys
+          from scrapers import SCRAPERS
+          import httpx
+
+          async def main():
+              failed = {}
+              async with httpx.AsyncClient() as client:
+                  for name, fn in SCRAPERS.items():
+                      try:
+                          offers = await fn("ventilateur", client)
+                          status = "OK" if offers else "VIDE (0 résultat)"
+                          print(f"{name:15} {status} ({len(offers)} offres)")
+                          if not offers:
+                              failed[name] = "0 résultat"
+                      except Exception as e:
+                          print(f"{name:15} ERREUR: {e}")
+                          failed[name] = str(e)
+              if failed:
+                  print(f"\n::error::{len(failed)} scraper(s) en échec : {', '.join(failed)}")
+                  sys.exit(1)
+
+          asyncio.run(main())
+          EOF
