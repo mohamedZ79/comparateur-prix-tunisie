@@ -1,6 +1,5 @@
 """
-Crawler Haute Capacité PrixTN - Couverture Complète du Marché Tunisien.
-Aspire des milliers de produits et met à jour Supabase automatiquement.
+Crawler Industriel PrixTN - Couverture Massive du Marché Tunisien (10 000+ Produits).
 """
 import asyncio
 import os
@@ -54,50 +53,58 @@ def parse_tnd_price(raw: str) -> Optional[float]:
     return None
 
 # -----------------------------------------------------------------------------
-# TOUS LES RAYONS DU MARCHÉ TUNISIEN
+# TOUS LES RAYONS ET CATÉGORIES EN PROFONDEUR
 # -----------------------------------------------------------------------------
 CATALOG_TARGETS = [
-    # 1. SPACENET (High-Tech, Électro, PC, TV)
-    ("SpaceNet", "High-Tech", "https://spacenet.tn/377-smartphone-tunisie?page={page}", 5),
-    ("SpaceNet", "High-Tech", "https://spacenet.tn/14-pc-portable?page={page}", 5),
-    ("SpaceNet", "Électroménager", "https://spacenet.tn/46-electromenager?page={page}", 5),
-    ("SpaceNet", "High-Tech", "https://spacenet.tn/recherche?s=samsung&page={page}", 4),
-    ("SpaceNet", "High-Tech", "https://spacenet.tn/recherche?s=iphone&page={page}", 3),
+    # 1. SPACENET (Téléphonie, Informatique, Électroménager, TV)
+    ("SpaceNet", "High-Tech", "https://spacenet.tn/377-smartphone-tunisie?page={page}", 12),
+    ("SpaceNet", "High-Tech", "https://spacenet.tn/14-pc-portable?page={page}", 10),
+    ("SpaceNet", "High-Tech", "https://spacenet.tn/11-informatique?page={page}", 10),
+    ("SpaceNet", "High-Tech", "https://spacenet.tn/15-tv-son?page={page}", 8),
+    ("SpaceNet", "Électroménager", "https://spacenet.tn/46-electromenager?page={page}", 10),
+    ("SpaceNet", "Électroménager", "https://spacenet.tn/47-petit-electromenager?page={page}", 10),
 
-    # 2. TUNISIANET (Smartphones, PC, TV, Électro, Soins)
-    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/377-smartphone-tunisie?page={page}", 5),
-    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/301-pc-portable-tunisie?page={page}", 5),
-    ("Tunisianet", "Électroménager", "https://www.tunisianet.com.tn/379-televiseur?page={page}", 4),
-    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/recherche?s=samsung+galaxy&page={page}", 4),
-    ("Tunisianet", "Électroménager", "https://www.tunisianet.com.tn/recherche?s=moulinex&page={page}", 3),
-    ("Tunisianet", "Électroménager", "https://www.tunisianet.com.tn/recherche?s=climatiseur&page={page}", 3),
+    # 2. TUNISIANET (Smartphones, PC, Composants, Électro, Beauté)
+    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/377-smartphone-tunisie?page={page}", 15),
+    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/301-pc-portable-tunisie?page={page}", 12),
+    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/302-composant-informatique-tunisie?page={page}", 10),
+    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/379-televiseur?page={page}", 8),
+    ("Tunisianet", "Électroménager", "https://www.tunisianet.com.tn/380-electromenager-tunisie?page={page}", 12),
+    ("Tunisianet", "Maison & Soins", "https://www.tunisianet.com.tn/386-beaute-et-sante?page={page}", 10),
 
-    # 3. YESWIKAM & PARAPHARMACIES (SVR, CeraVe, Bioderma, La Roche Posay...)
-    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/2-accueil?page={page}", 8),
-    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=svr&page={page}", 4),
-    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=bioderma&page={page}", 3),
-    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=cerave&page={page}", 3),
-    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=la+roche+posay&page={page}", 3),
-    ("MyCare", "Parapharmacie", "https://mycare.tn/recherche?s=soin&page={page}", 4),
-    ("MyCare", "Parapharmacie", "https://mycare.tn/recherche?s=gel&page={page}", 4),
+    # 3. YESWIKAM & PARAPHARMACIES (SVR, CeraVe, Bioderma, La Roche Posay, Soins...)
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/2-accueil?page={page}", 20),
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=soin&page={page}", 10),
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=gel&page={page}", 8),
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=creme&page={page}", 8),
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=shampoing&page={page}", 6),
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=bebe&page={page}", 6),
+    ("MyCare", "Parapharmacie", "https://mycare.tn/recherche?s=soin&page={page}", 10),
+    ("MyCare", "Parapharmacie", "https://mycare.tn/recherche?s=creme&page={page}", 8),
+    ("MyCare", "Parapharmacie", "https://mycare.tn/recherche?s=gel&page={page}", 8),
 
-    # 4. DARTY & ÉLECTROMÉNAGER
-    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=moulinex&page={page}", 4),
-    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=philips&page={page}", 4),
-    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=tefal&page={page}", 3),
-    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=electromenager&page={page}", 4),
+    # 4. DARTY TUNISIE (Électroménager, Robots, Climatiseurs, TV)
+    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=electromenager&page={page}", 8),
+    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=robot&page={page}", 6),
+    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=cafetiere&page={page}", 6),
+    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=aspirateur&page={page}", 6),
+    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=climatiseur&page={page}", 6),
 ]
 
-# 5. SANGOUR (Entretien, Judy, Détergents, Cuisine Tramontina, Tefal)
+# 5. SANGOUR (Entretien, Judy, Détergents, Linge, Vaisselle, Tramontina, Tefal)
 SANGOUR_TARGETS = [
     ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=judy"),
+    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=javel"),
+    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=detergent"),
+    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=vaisselle"),
+    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=sol"),
+    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=lessive"),
     ("Sangour", "Maison & Cuisine", "https://sangour.tn/?s=tramontina"),
     ("Sangour", "Maison & Cuisine", "https://sangour.tn/?s=tefal"),
     ("Sangour", "Maison & Cuisine", "https://sangour.tn/?s=moulinex"),
     ("Sangour", "Maison & Cuisine", "https://sangour.tn/?s=cocotte"),
-    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=detergent"),
-    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=javel"),
-    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=vaisselle"),
+    ("Sangour", "Maison & Cuisine", "https://sangour.tn/?s=poele"),
+    ("Sangour", "Maison & Cuisine", "https://sangour.tn/?s=casserole"),
 ]
 
 async def crawl_page(client: httpx.AsyncClient, source: str, category: str, url: str) -> List[Dict]:
@@ -159,49 +166,63 @@ async def crawl_mytek(client: httpx.AsyncClient) -> List[Dict]:
         MYTEK_GRAPHQL = "https://www.mytek.tn/graphql"
         MYTEK_MEDIA = "https://www.mytek.tn/media/catalog/product"
         
-        # Aspire tous les rayons High-Tech & Électro de MyTek
-        keywords = ["samsung", "iphone", "xiaomi", "pc portable", "tv", "climatiseur", "moulinex", "refrigerateur"]
+        # Aspire en masse tous les rayons MyTek (150 articles par rayon)
+        keywords = [
+            "samsung", "iphone", "xiaomi", "infinix", "oppo", "honor",
+            "pc portable", "pc gamer", "imprimante", "ecran", "tablette",
+            "tv", "climatiseur", "refrigerateur", "machine a laver", "micro ondes",
+            "moulinex", "tefal", "aspirateur", "cuisiniere", "cafetiere"
+        ]
+        
         for term in keywords:
-            query_gql = f"""
-            query {{
-              opensearchProductSearch(search: "{term}", page: 1, pageSize: 80) {{
-                items {{ id sku name price special_price final_price image url }}
-              }}
-            }}
-            """
-            resp = await client.post(MYTEK_GRAPHQL, json={"query": query_gql}, headers={"Content-Type": "application/json"}, timeout=12.0)
-            items = resp.json().get("data", {}).get("opensearchProductSearch", {}).get("items", [])
-            for it in items:
-                price = it.get("special_price") or it.get("final_price") or it.get("price")
-                title = (it.get("name") or "").strip()
-                if price and float(price) > 0 and title:
-                    img = it.get("image") or ""
-                    if img.startswith("/"):
-                        img = MYTEK_MEDIA + img
-                    url = it.get("url") or ""
-                    if url and not url.startswith("http"):
-                        url = "https://www.mytek.tn/" + url.lstrip("/")
-                    products.append({
-                        "source": "MyTek",
-                        "category": "High-Tech",
-                        "title": title,
-                        "sku": it.get("sku"),
-                        "price": round(float(price), 3),
-                        "price_raw": f"{float(price):,.3f} TND",
-                        "url": url,
-                        "image": img or None,
-                        "in_stock": True
-                    })
-            await asyncio.sleep(0.3)
+            for page in [1, 2]:
+                query_gql = f"""
+                query {{
+                  opensearchProductSearch(search: "{term}", page: {page}, pageSize: 120) {{
+                    items {{ id sku name price special_price final_price image url }}
+                  }}
+                }}
+                """
+                resp = await client.post(MYTEK_GRAPHQL, json={"query": query_gql}, headers={"Content-Type": "application/json"}, timeout=12.0)
+                items = resp.json().get("data", {}).get("opensearchProductSearch", {}).get("items", [])
+                for it in items:
+                    price = it.get("special_price") or it.get("final_price") or it.get("price")
+                    title = (it.get("name") or "").strip()
+                    if price and float(price) > 0 and title:
+                        img = it.get("image") or ""
+                        if img.startswith("/"):
+                            img = MYTEK_MEDIA + img
+                        url = it.get("url") or ""
+                        if url and not url.startswith("http"):
+                            url = "https://www.mytek.tn/" + url.lstrip("/")
+                        products.append({
+                            "source": "MyTek",
+                            "category": "High-Tech",
+                            "title": title,
+                            "sku": it.get("sku"),
+                            "price": round(float(price), 3),
+                            "price_raw": f"{float(price):,.3f} TND",
+                            "url": url,
+                            "image": img or None,
+                            "in_stock": True
+                        })
+                await asyncio.sleep(0.2)
     except Exception as e:
         print(f"Erreur MyTek : {e}")
     return products
 
-async def save_to_database(products: List[Dict]):
-    print(f"\n💾 Connexion à Supabase PostgreSQL...")
+async def save_to_database_bulk(products: List[Dict]):
+    print(f"\n💾 Connexion à Supabase PostgreSQL pour l'enregistrement massif...")
     conn = await asyncpg.connect(DATABASE_URL)
     
-    saved_count = 0
+    # Dédoublonnage en mémoire avant insertion
+    unique_map = {}
+    for p in products:
+        unique_map[(p["source"], p["url"])] = p
+    deduped_products = list(unique_map.values())
+
+    print(f"📦 Insertion par lots de {len(deduped_products)} produits uniques dans Supabase...")
+    
     upsert_query = """
     INSERT INTO products (source, category, title, sku, price, price_raw, url, image, in_stock, updated_at)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
@@ -214,49 +235,48 @@ async def save_to_database(products: List[Dict]):
         updated_at = NOW();
     """
 
-    for p in products:
-        try:
-            await conn.execute(
-                upsert_query,
-                p["source"], p["category"], p["title"], p["sku"],
-                p["price"], p["price_raw"], p["url"], p["image"], p["in_stock"]
-            )
-            saved_count += 1
-        except Exception:
-            pass
+    # Insertion rapide par paquet de 200 lignes
+    batch_size = 200
+    for i in range(0, len(deduped_products), batch_size):
+        batch = deduped_products[i:i + batch_size]
+        records = [
+            (p["source"], p["category"], p["title"], p["sku"], p["price"], p["price_raw"], p["url"], p["image"], p["in_stock"])
+            for p in batch
+        ]
+        await conn.executemany(upsert_query, records)
 
     await conn.close()
-    print(f"🎉 SUCCÈS : {saved_count} produits enregistrés / mis à jour dans votre base Supabase !")
+    print(f"🎉 SUCCÈS TOTAL : {len(deduped_products)} produits enregistrés / mis à jour dans Supabase !")
 
 async def main():
-    print("🚀 Démarrage du Grand Crawler PrixTN...\n")
+    print("🚀 Démarrage du Grand Crawler Industriel PrixTN...\n")
     all_products = []
     
     async with httpx.AsyncClient(follow_redirects=True, verify=False) as client:
-        # 1. Catégories Multi-Pages (SpaceNet, Tunisianet, Yeswikam, Darty)
+        # 1. Catégories Complètes Multi-Pages
         for source, cat, base_url, total_pages in CATALOG_TARGETS:
-            print(f"[{source}] Indexation de {cat} ({total_pages} pages)...")
+            print(f"[{source}] Exploration de {cat} ({total_pages} pages)...")
             for page in range(1, total_pages + 1):
                 url = base_url.format(page=page)
                 items = await crawl_page(client, source, cat, url)
                 all_products.extend(items)
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.15)
 
-        # 2. Sangour Direct (Judy, Tramontina, Tefal, Moulinex...)
+        # 2. Sangour Entretien & Cuisine (Judy, Tramontina...)
         for source, cat, url in SANGOUR_TARGETS:
-            print(f"[{source}] Indexation de {url}...")
+            print(f"[{source}] Exploration de {url}...")
             items = await crawl_page(client, source, cat, url)
             all_products.extend(items)
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.15)
 
-        # 3. MyTek GraphQL (Centaines d'articles)
-        print(f"[MyTek] Indexation approfondie du catalogue...")
+        # 3. MyTek GraphQL Massif (Des milliers d'articles)
+        print(f"[MyTek] Exploration massive de tous les rayons High-Tech & Électro...")
         mytek_items = await crawl_mytek(client)
         all_products.extend(mytek_items)
 
-    print(f"\n📦 Total collecté : {len(all_products)} produits.")
+    print(f"\n📦 TOTAL GLOBAL ASPIRÉ : {len(all_products)} produits.")
     if all_products:
-        await save_to_database(all_products)
+        await save_to_database_bulk(all_products)
 
 if __name__ == "__main__":
     asyncio.run(main())
