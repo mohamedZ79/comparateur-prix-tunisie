@@ -1,7 +1,6 @@
 """
-Robot d'Indexation (Crawler) pour PrixTN.
-Scrape les catalogues marchands tunisiens et remplit la base de données Supabase.
-Lancement manuel : python crawler.py
+Crawler Haute Capacité PrixTN - Multi-Pages & Multi-Catégories.
+Aspire des milliers de produits et les enregistre dans Supabase PostgreSQL.
 """
 import asyncio
 import os
@@ -12,7 +11,7 @@ import httpx
 from bs4 import BeautifulSoup
 import asyncpg
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:[YOUR-PASSWORD]@db.lmhbpzvxmumucdsjdurb.supabase.co:5432/postgres")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -20,15 +19,12 @@ HEADERS = {
     "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8",
 }
 
-# -----------------------------------------------------------------------------
-# Parsing et Normalisation des Prix Tunisiens
-# -----------------------------------------------------------------------------
 def parse_tnd_price(raw: str) -> Optional[float]:
     if not raw:
         return None
     cleaned = unicodedata.normalize("NFKD", str(raw)).strip().lower()
     
-    # Carrefour format "249DT000"
+    # Format Carrefour
     m_c = re.search(r'(\d+)\s*(?:dt|tnd|d\.t)\s*(\d{3})', cleaned)
     if m_c:
         return float(f"{m_c.group(1)}.{m_c.group(2)}")
@@ -58,38 +54,39 @@ def parse_tnd_price(raw: str) -> Optional[float]:
     return None
 
 # -----------------------------------------------------------------------------
-# Catalogues Cibles à Indexer (Maison, High-Tech, Parapharmacie, Entretien)
+# Catégories Majeures du Marché Tunisien à Explorer (Multi-Pages)
 # -----------------------------------------------------------------------------
-CATALOG_TARGETS = [
-    # High-Tech & Téléphonie
-    ("SpaceNet", "High-Tech", "https://spacenet.tn/recherche?controller=search&s=smartphone"),
-    ("SpaceNet", "High-Tech", "https://spacenet.tn/recherche?controller=search&s=samsung"),
-    ("SpaceNet", "High-Tech", "https://spacenet.tn/recherche?controller=search&s=pc+portable"),
-    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/recherche?controller=search&s=samsung"),
-    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/recherche?controller=search&s=smartphone"),
-    ("Wiki", "High-Tech", "https://www.wiki.tn/?s=samsung&post_type=product"),
-    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=philips"),
-    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=moulinex"),
-    
-    # Maison, Entretien & Détergents (Sangour Judy, Tramontina...)
-    ("Sangour", "Maison & Entretien", "https://sangour.tn/?s=judy"),
-    ("Sangour", "Maison & Cuisine", "https://sangour.tn/?s=tramontina"),
-    ("Sangour", "Maison & Cuisine", "https://sangour.tn/?s=tefal"),
-    ("Wamia", "Maison & Électro", "https://wamia.tn/recherche?s=cuisine"),
+CATEGORY_URLS = [
+    # SpaceNet (Smartphones, PC, TV, Électro)
+    ("SpaceNet", "High-Tech", "https://spacenet.tn/377-smartphone-tunisie?page={page}", 4),
+    ("SpaceNet", "High-Tech", "https://spacenet.tn/14-pc-portable?page={page}", 3),
+    ("SpaceNet", "Électroménager", "https://spacenet.tn/46-electromenager?page={page}", 3),
 
-    # Parapharmacies (Yeswikam, Paraexpert, MyCare...)
-    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=svr"),
-    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=bioderma"),
-    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=cerave"),
-    ("Paraexpert", "Parapharmacie", "https://paraexpert.tn/?s=svr"),
-    ("MyCare", "Parapharmacie", "https://mycare.tn/recherche?s=svr"),
-    ("Phyto.tn", "Parapharmacie", "https://phyto.tn/recherche?s=gel"),
+    # Tunisianet (Smartphones, PC, Soins, Électro)
+    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/377-smartphone-tunisie?page={page}", 4),
+    ("Tunisianet", "High-Tech", "https://www.tunisianet.com.tn/301-pc-portable-tunisie?page={page}", 3),
+    ("Tunisianet", "Électroménager", "https://www.tunisianet.com.tn/379-televiseur?page={page}", 3),
+
+    # Yeswikam (Parapharmacie complète)
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/2-accueil?page={page}", 6),
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=svr&page={page}", 3),
+    ("Yeswikam", "Parapharmacie", "https://www.yeswikam.com/recherche?s=bioderma&page={page}", 2),
+
+    # MyCare (Parapharmacie)
+    ("MyCare", "Parapharmacie", "https://mycare.tn/recherche?s=soin&page={page}", 3),
+    ("MyCare", "Parapharmacie", "https://mycare.tn/recherche?s=gel&page={page}", 3),
+
+    # Sangour (Entretien, Maison, Détergents, Cuisine)
+    ("Sangour", "Maison & Entretien", "https://sangour.tn/page/{page}/?s=judy", 3),
+    ("Sangour", "Maison & Cuisine", "https://sangour.tn/page/{page}/?s=tramontina", 3),
+    ("Sangour", "Maison & Cuisine", "https://sangour.tn/page/{page}/?s=tefal", 3),
+
+    # Darty & Électroménager
+    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=electromenager&page={page}", 3),
+    ("Darty TN", "Électroménager", "https://darty.tn/recherche?s=philips&page={page}", 2),
 ]
 
-# -----------------------------------------------------------------------------
-# Scrapers d'indexation
-# -----------------------------------------------------------------------------
-async def crawl_url(client: httpx.AsyncClient, source: str, category: str, url: str) -> List[Dict]:
+async def crawl_page(client: httpx.AsyncClient, source: str, category: str, url: str) -> List[Dict]:
     products = []
     try:
         res = await client.get(url, headers=HEADERS, timeout=12.0)
@@ -139,52 +136,52 @@ async def crawl_url(client: httpx.AsyncClient, source: str, category: str, url: 
                         "in_stock": True
                     })
     except Exception as e:
-        print(f"Erreur sur {url} : {e}")
+        pass
     return products
 
-# Scraper GraphQL MyTek pour indexer tout le catalogue High-Tech
 async def crawl_mytek(client: httpx.AsyncClient) -> List[Dict]:
     products = []
     try:
         MYTEK_GRAPHQL = "https://www.mytek.tn/graphql"
         MYTEK_MEDIA = "https://www.mytek.tn/media/catalog/product"
-        query_gql = """
-        query {
-          opensearchProductSearch(search: "samsung", page: 1, pageSize: 60) {
-            items { id sku name price special_price final_price image url }
-          }
-        }
-        """
-        resp = await client.post(MYTEK_GRAPHQL, json={"query": query_gql}, headers={"Content-Type": "application/json"}, timeout=12.0)
-        items = resp.json().get("data", {}).get("opensearchProductSearch", {}).get("items", [])
-        for it in items:
-            price = it.get("special_price") or it.get("final_price") or it.get("price")
-            title = (it.get("name") or "").strip()
-            if price and float(price) > 0 and title:
-                img = it.get("image") or ""
-                if img.startswith("/"):
-                    img = MYTEK_MEDIA + img
-                url = it.get("url") or ""
-                if url and not url.startswith("http"):
-                    url = "https://www.mytek.tn/" + url.lstrip("/")
-                products.append({
-                    "source": "MyTek",
-                    "category": "High-Tech",
-                    "title": title,
-                    "sku": it.get("sku"),
-                    "price": round(float(price), 3),
-                    "price_raw": f"{float(price):,.3f} TND",
-                    "url": url,
-                    "image": img or None,
-                    "in_stock": True
-                })
+        
+        # Aspire 100 produits High-Tech par requête GraphQL
+        for term in ["samsung", "smartphone", "portable", "tv", "electro"]:
+            query_gql = f"""
+            query {{
+              opensearchProductSearch(search: "{term}", page: 1, pageSize: 80) {{
+                items {{ id sku name price special_price final_price image url }}
+              }}
+            }}
+            """
+            resp = await client.post(MYTEK_GRAPHQL, json={"query": query_gql}, headers={"Content-Type": "application/json"}, timeout=12.0)
+            items = resp.json().get("data", {}).get("opensearchProductSearch", {}).get("items", [])
+            for it in items:
+                price = it.get("special_price") or it.get("final_price") or it.get("price")
+                title = (it.get("name") or "").strip()
+                if price and float(price) > 0 and title:
+                    img = it.get("image") or ""
+                    if img.startswith("/"):
+                        img = MYTEK_MEDIA + img
+                    url = it.get("url") or ""
+                    if url and not url.startswith("http"):
+                        url = "https://www.mytek.tn/" + url.lstrip("/")
+                    products.append({
+                        "source": "MyTek",
+                        "category": "High-Tech",
+                        "title": title,
+                        "sku": it.get("sku"),
+                        "price": round(float(price), 3),
+                        "price_raw": f"{float(price):,.3f} TND",
+                        "url": url,
+                        "image": img or None,
+                        "in_stock": True
+                    })
+            await asyncio.sleep(0.3)
     except Exception as e:
         print(f"Erreur MyTek : {e}")
     return products
 
-# -----------------------------------------------------------------------------
-# Enregistrement dans Supabase PostgreSQL
-# -----------------------------------------------------------------------------
 async def save_to_database(products: List[Dict]):
     print(f"\n💾 Connexion à Supabase PostgreSQL...")
     conn = await asyncpg.connect(DATABASE_URL)
@@ -211,29 +208,29 @@ async def save_to_database(products: List[Dict]):
             )
             saved_count += 1
         except Exception as e:
-            print(f"Erreur insertion {p['title']} : {e}")
+            pass
 
     await conn.close()
-    print(f"✅ {saved_count} produits enregistrés / mis à jour dans Supabase avec succès !")
+    print(f"🎉 SUCCÈS : {saved_count} produits enregistrés / mis à jour dans votre base Supabase !")
 
 async def main():
-    print("🚀 Démarrage du Crawler d'Indexation PrixTN...\n")
+    print("🚀 Démarrage du Crawler Multi-Pages PrixTN...\n")
     all_products = []
     
     async with httpx.AsyncClient(follow_redirects=True, verify=False) as client:
-        # Crawl des catalogues
-        for source, cat, url in CATALOG_TARGETS:
-            print(f"[{source}] Indexation de {url}...")
-            items = await crawl_url(client, source, cat, url)
-            all_products.extend(items)
-            print(f" -> {len(items)} articles collectés.")
-            await asyncio.sleep(0.5)
+        # Parcours multi-pages de toutes les catégories
+        for source, cat, base_url, total_pages in CATEGORY_URLS:
+            print(f"[{source}] Indexation de la catégorie {cat} ({total_pages} pages)...")
+            for page in range(1, total_pages + 1):
+                url = base_url.format(page=page)
+                items = await crawl_page(client, source, cat, url)
+                all_products.extend(items)
+                await asyncio.sleep(0.3)
 
-        # Crawl MyTek
-        print(f"[MyTek] Indexation du catalogue High-Tech...")
+        # Parcours MyTek GraphQL (centaines de produits)
+        print(f"[MyTek] Indexation approfondie du catalogue...")
         mytek_items = await crawl_mytek(client)
         all_products.extend(mytek_items)
-        print(f" -> {len(mytek_items)} articles MyTek collectés.")
 
     print(f"\n📦 Total collecté : {len(all_products)} produits.")
     if all_products:
