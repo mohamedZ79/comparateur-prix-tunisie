@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+beautifulsoup4>=4.12
+rapidfuzz>=3.9
+# --- optionnel : sites protégés par Cloudflare Turnstile (Mytek, Wamia, Sangour) ---
+# Nécessite aussi : playwright install chromium && playwright install-deps chromium
+# et une IP résidentielle tunisienne (voir README).
+# playwright>=1.44
+# --- optionnel : cache partagé en production ---
+# redis>=5.0

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PrixTN — Comparateur de prix tunisien</title>
+<style>
+  :root { --red:#e70013; --bg:#f6f7f9; --card:#fff; --txt:#1a1a2e; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--txt); }
+  header { background:linear-gradient(135deg,#e70013,#b0000f); color:#fff; padding:2.5rem 1rem 4.5rem; text-align:center; }
+  header h1 { font-size:1.8rem; letter-spacing:.5px; }
+  header p { opacity:.85; margin-top:.3rem; font-size:.95rem; }
+  .search-box { max-width:640px; margin:-2rem auto 0; display:flex; background:#fff; border-radius:14px;
+                box-shadow:0 8px 30px rgba(0,0,0,.15); overflow:hidden; }
+  .search-box input { flex:1; border:none; padding:1rem 1.2rem; font-size:1rem; outline:none; }
+  .search-box button { background:var(--red); color:#fff; border:none; padding:0 1.6rem; font-size:1rem;
+                       cursor:pointer; font-weight:600; transition:background .2s; }
+  .search-box button:hover { background:#c00010; }
+  .search-box button:disabled { background:#999; cursor:wait; }
+  main { max-width:900px; margin:2rem auto; padding:0 1rem; }
+  #status { text-align:center; color:#666; margin:1.5rem 0; min-height:1.4rem; }
+  .spinner { display:inline-block; width:18px; height:18px; border:3px solid #ddd; border-top-color:var(--red);
+             border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; margin-right:.5rem; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .card { display:flex; gap:1rem; background:var(--card); border-radius:12px; padding:1rem; margin-bottom:.8rem;
+          box-shadow:0 2px 8px rgba(0,0,0,.06); align-items:center; transition:transform .15s; }
+  .card:hover { transform:translateY(-2px); }
+  .card.best { border:2px solid var(--red); position:relative; }
+  .card.best::before { content:"🏆 MEILLEUR PRIX"; position:absolute; top:-11px; left:14px; background:var(--red);
+                       color:#fff; font-size:.68rem; font-weight:700; padding:2px 10px; border-radius:10px; }
+  .card img { width:90px; height:90px; object-fit:contain; border-radius:8px; background:#fff; flex-shrink:0; }
+  .card .info { flex:1; min-width:0; }
+  .card .title { font-weight:600; font-size:.95rem; margin-bottom:.25rem; }
+  .card .meta { font-size:.8rem; color:#777; }
+  .badge { display:inline-block; background:#eef0f3; border-radius:6px; padding:1px 8px; font-size:.75rem; margin-right:.4rem; }
+  .stock { color:#0a8a3a; font-weight:600; }
+  .price { font-size:1.25rem; font-weight:800; color:var(--red); white-space:nowrap; text-align:right; }
+  .price small { display:block; font-size:.7rem; color:#999; font-weight:400; }
+  a.card-link { text-decoration:none; color:inherit; }
+  #errors { font-size:.8rem; color:#b00; text-align:center; margin-top:1rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🇹🇳 PrixTN</h1>
+  <p>Le meilleur prix, en direct, sur les boutiques tunisiennes</p>
+</header>
+
+<form class="search-box" id="form">
+  <input id="q" type="text" placeholder="Ex : Ventilateur Orient, Samsung S23, PC portable i5…" required minlength="2">
+  <button id="btn" type="submit">Comparer</button>
+</form>
+
+<main>
+  <div id="status"></div>
+  <div id="results"></div>
+  <div id="errors"></div>
+</main>
+
+<script>
+// En production : remplacer par l'URL de l'API (ex: https://api.prixtn.onrender.com)
+const API = location.origin + "/api/search";
+
+const form = document.getElementById('form');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+const errorsEl = document.getElementById('errors');
+const btn = document.getElementById('btn');
+
+const fmt = new Intl.NumberFormat('fr-TN', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = document.getElementById('q').value.trim();
+  if (q.length < 2) return;
+
+  btn.disabled = true;
+  resultsEl.innerHTML = '';
+  errorsEl.innerHTML = '';
+  statusEl.innerHTML = '<span class="spinner"></span>Recherche en direct sur les boutiques…';
+  const t0 = performance.now();
+
+  try {
+    const res = await fetch(API + '?q=' + encodeURIComponent(q));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const dt = ((performance.now() - t0) / 1000).toFixed(1);
+
+    if (data.count === 0) {
+      statusEl.textContent = `Aucune offre trouvée pour « ${q} » (${dt}s).`;
+    } else {
+      statusEl.textContent = `${data.count} offres en ${dt}s ${data.cached ? '(cache ⚡)' : '(scraping live 🔄)'}`;
+      data.offers.forEach((o, i) => resultsEl.appendChild(renderCard(o, i === 0)));
+    }
+    if (data.errors && Object.keys(data.errors).length) {
+      errorsEl.textContent = '⚠️ Boutiques indisponibles : ' + Object.keys(data.errors).join(', ');
+    }
+  } catch (err) {
+    statusEl.textContent = '❌ Erreur : ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderCard(o, isBest) {
+  const a = document.createElement('a');
+  a.href = o.url; a.target = '_blank'; a.rel = 'noopener'; a.className = 'card-link';
+  a.innerHTML = `
+    <div class="card ${isBest ? 'best' : ''}">
+      <img src="${o.image || ''}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+      <div class="info">
+        <div class="title">${escapeHtml(o.title)}</div>
+        <div class="meta">
+          <span class="badge">${o.source}</span>
+          <span class="stock">${escapeHtml(o.availability)}</span>
+          <span class="badge">pertinence ${o.match_score}%</span>
+        </div>
+      </div>
+      <div class="price">${o.price != null ? fmt.format(o.price) + ' TND' : '—'}<small>${escapeHtml(o.price_raw)}</small></div>
+    </div>`;
+  return a;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Recherche via paramètre d'URL (?q=...) — liens partageables
+const qp = new URLSearchParams(location.search).get('q');
+if (qp && qp.trim().length >= 2) {
+  document.getElementById('q').value = qp.trim();
+  form.requestSubmit();
+}
+</script>
+</body>
+</html>
