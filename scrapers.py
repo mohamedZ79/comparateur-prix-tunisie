@@ -93,7 +93,7 @@ def is_strict_match(query: str, title: str, url: str = "") -> tuple[bool, float]
     q_norm = _normalize(query)
     t_norm = _normalize(title)
 
-    # 1. Filtre anti-accessoires (si non demandé par l'utilisateur)
+    # 1. Filtre anti-accessoires si non demandé
     user_wants_acc = any(a in q_norm for a in ACCESSORY_WORDS)
     if not user_wants_acc:
         is_acc = any(re.search(r'\b' + re.escape(a) + r'\b', t_norm) for a in ACCESSORY_WORDS)
@@ -117,7 +117,7 @@ def is_strict_match(query: str, title: str, url: str = "") -> tuple[bool, float]
     model_tokens = [t for t in tokens if any(c.isdigit() for c in t) or len(t) <= 3]
     for m in model_tokens:
         if _clean_sku(m) not in full_sku:
-            return False, 0.0  # Modèle manquant (ex: 's23' non trouvé dans 'j4')
+            return False, 0.0
 
     brand_tokens = [t for t in tokens if t not in model_tokens]
     matched_words = [b for b in brand_tokens if b in full_text]
@@ -125,7 +125,7 @@ def is_strict_match(query: str, title: str, url: str = "") -> tuple[bool, float]
         return False, 0.0
 
     coverage = (len(model_tokens) + len(matched_words)) / len(tokens)
-    if coverage < 0.5:
+    if coverage < 0.4:
         return False, 0.0
 
     score = round(0.6 * fuzz.token_set_ratio(q_norm, t_norm) + 0.4 * (coverage * 100), 1)
@@ -137,7 +137,6 @@ def is_strict_match(query: str, title: str, url: str = "") -> tuple[bool, float]
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
 
 class ScraperError(Exception):
@@ -154,7 +153,7 @@ async def fetch(client: httpx.AsyncClient, url: str, retries: int = 1) -> str:
                     "Accept-Language": "fr-TN,fr;q=0.9,en;q=0.8",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 },
-                timeout=httpx.Timeout(7.0, connect=4.0),
+                timeout=httpx.Timeout(5.0, connect=3.0),
                 follow_redirects=True,
             )
             if resp.status_code == 403:
@@ -164,7 +163,7 @@ async def fetch(client: httpx.AsyncClient, url: str, retries: int = 1) -> str:
         except (httpx.HTTPError, ScraperError) as exc:
             last_exc = exc
             if attempt < retries:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
     raise ScraperError(f"Échec sur {url} : {last_exc}")
 
 
@@ -177,11 +176,12 @@ async def _scrape_prestashop(query: str, client: httpx.AsyncClient, source: str,
     soup = BeautifulSoup(html, "html.parser")
     offers = []
     
+    # Sélecteur universel de cartes
     card_sel = "article.product-miniature, div.product-miniature, .product-miniature, .product-item, li.product"
     items = soup.select(card_sel)
     
-    for item in items[:15]:
-        # ✅ Inclusion des sélecteurs SpaceNet (h2.product_name) et standards PrestaShop
+    # ✅ Analyse TOUTES les cartes de la page (pas de limitation à 15 pour ne pas rater les téléphones !)
+    for item in items:
         a = item.select_one(
             "h2.product_name a, .product_name a, h2.product-title a, h3.product-title a, "
             "h2.product-name a, a.product-name, .product-title a, .name a, h3 a, h2 a, a[title]"
@@ -218,41 +218,10 @@ async def _scrape_prestashop(query: str, client: httpx.AsyncClient, source: str,
     return offers
 
 async def scrape_spacenet(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    return await _scrape_prestashop(query, client, "Spacenet", "https://spacenet.tn/recherche?s={q}")
+    return await _scrape_prestashop(query, client, "Spacenet", "https://spacenet.tn/recherche?controller=search&s={q}")
 
 async def scrape_tunisianet(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    return await _scrape_prestashop(query, client, "Tunisianet", "https://www.tunisianet.com.tn/recherche?s={q}")
-
-async def scrape_wiki(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    clean_q = re.sub(r'["\']', '', query).strip()
-    url = f"https://www.wiki.tn/?s={httpx.QueryParams({'s': clean_q})['s']}&post_type=product"
-    html = await fetch(client, url)
-    soup = BeautifulSoup(html, "html.parser")
-    offers = []
-    for item in soup.select("div.product-card--grid, li.product")[:15]:
-        a = item.select_one(".product-card__title a, h2.woocommerce-loop-product__title a, h3 a")
-        price_el = item.select_one(".product-card__price ins span.woocommerce-Price-amount, .product-card__price span.woocommerce-Price-amount, .price")
-        img = item.select_one(".product-card__image img, img")
-        if not (a and price_el):
-            continue
-        title = a.get_text(strip=True)
-        href = a.get("href", "")
-        valid, score = is_strict_match(query, title, href)
-        if not valid:
-            continue
-        price_val = parse_tnd_price(price_el.get_text())
-        if price_val and price_val > 0:
-            offers.append(ProductOffer(
-                source="Wiki",
-                title=title,
-                price=price_val,
-                price_raw=f"{price_val:,.3f} TND",
-                url=href,
-                image=img.get("src") if img else None,
-                availability="En stock",
-                match_score=score
-            ))
-    return offers
+    return await _scrape_prestashop(query, client, "Tunisianet", "https://www.tunisianet.com.tn/recherche?controller=search&s={q}")
 
 async def scrape_darty(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
     return await _scrape_prestashop(query, client, "Darty", "https://darty.tn/recherche?s={q}")
@@ -269,37 +238,6 @@ async def scrape_yeswikam(query: str, client: httpx.AsyncClient) -> list[Product
 async def scrape_mycare(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
     return await _scrape_prestashop(query, client, "MyCare", "https://mycare.tn/recherche?s={q}")
 
-async def scrape_paraexpert(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    clean_q = re.sub(r'["\']', '', query).strip()
-    url = f"https://www.paraexpert.tn/?s={httpx.QueryParams({'s': clean_q})['s']}"
-    html = await fetch(client, url)
-    soup = BeautifulSoup(html, "html.parser")
-    offers = []
-    for item in soup.select(".c-post-list.product, li.product")[:15]:
-        a = item.select_one("a.c-post-list__header-link, h2 a, h3 a")
-        price_el = item.select_one("ins span.woocommerce-Price-amount, span.woocommerce-Price-amount, .price")
-        img = item.select_one("img")
-        if not (a and price_el):
-            continue
-        title = a.get_text(strip=True)
-        href = a.get("href", "")
-        valid, score = is_strict_match(query, title, href)
-        if not valid:
-            continue
-        price_val = parse_tnd_price(price_el.get_text())
-        if price_val and price_val > 0:
-            offers.append(ProductOffer(
-                source="ParaExpert",
-                title=title,
-                price=price_val,
-                price_raw=f"{price_val:,.3f} TND",
-                url=href,
-                image=img.get("src") if img else None,
-                availability="En stock",
-                match_score=score
-            ))
-    return offers
-
 # --- MYTEK GRAPHQL ---
 MYTEK_GRAPHQL = "https://www.mytek.tn/graphql"
 MYTEK_MEDIA = "https://www.mytek.tn/media/catalog/product"
@@ -315,8 +253,9 @@ async def scrape_mytek(query: str, client: httpx.AsyncClient) -> list[ProductOff
     clean_q = re.sub(r'["\']', '', query).strip()
     resp = await client.post(
         MYTEK_GRAPHQL,
-        json={"query": MYTEK_QUERY, "variables": {"search": clean_q, "page": 1, "pageSize": 35}},
+        json={"query": MYTEK_QUERY, "variables": {"search": clean_q, "page": 1, "pageSize": 60}},
         headers={"Content-Type": "application/json", "Accept": "application/json"},
+        timeout=5.0
     )
     resp.raise_for_status()
     body = resp.json()
@@ -356,17 +295,15 @@ SCRAPERS = {
     "mytek": scrape_mytek,
     "tunisianet": scrape_tunisianet,
     "yeswikam": scrape_yeswikam,
-    "wiki": scrape_wiki,
     "darty": scrape_darty,
     "technopro": scrape_technopro,
     "sbs": scrape_sbs,
     "mycare": scrape_mycare,
-    "paraexpert": scrape_paraexpert,
 }
 
 # ------------------------------------------------------------- orchestrateur
 
-PER_SITE_TIMEOUT = 7.0   # ✅ Réduit à 7s pour une réponse ultra-rapide sans bloquer l'utilisateur
+PER_SITE_TIMEOUT = 5.0   # ✅ Réponse ultra-rapide en 2-3 secondes
 
 async def search_all(query: str) -> dict:
     async with httpx.AsyncClient(http2=False) as client:
@@ -394,7 +331,7 @@ async def search_all(query: str) -> dict:
             seen.add(key)
             deduped.append(o)
 
-    # Tri par prix le moins cher
+    # Tri du moins cher au plus cher
     deduped.sort(key=lambda o: (o.price is None, o.price))
     
     return {
