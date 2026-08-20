@@ -60,8 +60,10 @@
 </main>
 
 <script>
-// En production : remplacer par l'URL de l'API (ex: https://api.prixtn.onrender.com)
-const API = location.origin + "/api/search";
+// ✅ Détection automatique : Localhost en dev, Render en production sur Netlify
+const API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+  ? 'http://127.0.0.1:8000/api/search'
+  : 'https://api-comparateur-tunisie.onrender.com/api/search';
 
 const form = document.getElementById('form');
 const statusEl = document.getElementById('status');
@@ -80,24 +82,33 @@ form.addEventListener('submit', async (e) => {
   resultsEl.innerHTML = '';
   errorsEl.innerHTML = '';
   statusEl.innerHTML = '<span class="spinner"></span>Recherche en direct sur les boutiques…';
+  
+  // Message informatif si Render est en cours de réveil
+  const timer = setTimeout(() => {
+    statusEl.innerHTML = '<span class="spinner"></span>⚡ Réveil du serveur Cloud en cours, veuillez patienter quelques secondes…';
+  }, 4000);
+
   const t0 = performance.now();
 
   try {
     const res = await fetch(API + '?q=' + encodeURIComponent(q));
+    clearTimeout(timer);
+
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const dt = ((performance.now() - t0) / 1000).toFixed(1);
 
-    if (data.count === 0) {
+    if (!data.offers || data.offers.length === 0) {
       statusEl.textContent = `Aucune offre trouvée pour « ${q} » (${dt}s).`;
     } else {
-      statusEl.textContent = `${data.count} offres en ${dt}s ${data.cached ? '(cache ⚡)' : '(scraping live 🔄)'}`;
+      statusEl.textContent = `${data.offers.length} offres en ${dt}s ${data.cached ? '(cache ⚡)' : '(scraping live 🔄)'}`;
       data.offers.forEach((o, i) => resultsEl.appendChild(renderCard(o, i === 0)));
     }
     if (data.errors && Object.keys(data.errors).length) {
       errorsEl.textContent = '⚠️ Boutiques indisponibles : ' + Object.keys(data.errors).join(', ');
     }
   } catch (err) {
+    clearTimeout(timer);
     statusEl.textContent = '❌ Erreur : ' + err.message;
   } finally {
     btn.disabled = false;
@@ -114,11 +125,11 @@ function renderCard(o, isBest) {
         <div class="title">${escapeHtml(o.title)}</div>
         <div class="meta">
           <span class="badge">${o.source}</span>
-          <span class="stock">${escapeHtml(o.availability)}</span>
-          <span class="badge">pertinence ${o.match_score}%</span>
+          <span class="stock">${escapeHtml(o.availability || 'En stock')}</span>
+          ${o.match_score ? `<span class="badge">pertinence ${o.match_score}%</span>` : ''}
         </div>
       </div>
-      <div class="price">${o.price != null ? fmt.format(o.price) + ' TND' : '—'}<small>${escapeHtml(o.price_raw)}</small></div>
+      <div class="price">${o.price != null ? fmt.format(o.price) + ' TND' : '—'}<small>${escapeHtml(o.price_raw || '')}</small></div>
     </div>`;
   return a;
 }
