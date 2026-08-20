@@ -7,7 +7,7 @@ import os
 import random
 import re
 import unicodedata
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Optional
 
 import httpx
@@ -25,7 +25,7 @@ class ProductOffer:
     url: str
     image: Optional[str]
     availability: str
-    match_score: float = 0.0        # score de fuzzy matching (0-100)
+    match_score: float = 0.0        # score de pertinence (0-100)
 
     def to_dict(self):
         return asdict(self)
@@ -36,73 +36,118 @@ class ProductOffer:
 _PRICE_RE = re.compile(r"(\d[\d\s.,]*)")
 
 def parse_tnd_price(raw: str) -> Optional[float]:
-    """
-    Convertit les formats tunisiens en float :
-      "9,900 DT"   -> 9.9      (virgule = séparateur décimal, 3 décimales)
-      "1 299,000 TND" -> 1299.0
-      "9.900 DT"   -> 9.9      (point décimal, certains sites)
-      "1.299 DT"   -> 1299.0   (point = séparateur de milliers, heuristique)
-    """
     if not raw:
         return None
+    cleaned = unicodedata.normalize("NFKD", str(raw)).strip().lower()
+
+    # Format Carrefour (ex: "249DT000")
+    carrefour_match = re.search(r'(\d+)\s*(?:dt|tnd|d\.t)\s*(\d{3})', cleaned)
+    if carrefour_match:
+        return float(f"{carrefour_match.group(1)}.{carrefour_match.group(2)}")
+
+    # Prix avec DT / TND explicite (évite de confondre avec 750ml ou 500g)
+    tnd_matches = re.findall(r'(\d+[\s\.,]+\d{2,3})\s*(?:dt|tnd|d\.t|dinars?)', cleaned)
+    if tnd_matches:
+        val_str = tnd_matches[-1].replace(" ", "").replace(",", ".")
+        try:
+            return round(float(val_str), 3)
+        except ValueError:
+            pass
+
     m = _PRICE_RE.search(raw.replace("\xa0", " "))
     if not m:
         return None
     num = m.group(1).strip()
     if "," in num:
-        # Virgule = décimale tunisienne ; points/espaces = milliers
-        # "1 299,000" -> 1299.0 | "131,370" -> 131.37
         num = num.replace(" ", "").replace(".", "").replace(",", ".")
     else:
         num = num.replace(" ", "")
-        # Plusieurs groupes de points -> séparateurs de milliers ("1.234.567")
         if re.fullmatch(r"\d{1,3}(\.\d{3}){2,}", num):
             num = num.replace(".", "")
-        # Un seul point -> décimale ("9.900" -> 9.9, "131.370" -> 131.37)
     try:
-        return float(num)
+        return round(float(num), 3)
     except ValueError:
         return None
 
 
-# --------------------------------------------------------- fuzzy matching
+# --------------------------------------------- filtrage strict & volumes
 
-_STOPWORDS = {"de", "du", "la", "le", "les", "des", "pour", "avec", "en", "a", "au"}
+ACCESSORY_WORDS = {"coque", "etui", "housse", "pochette", "protecteur", "protection",
+                   "film", "verre trempe", "verre", "incassable", "cable", "chargeur",
+                   "adaptateur", "support", "vitre", "skin", "cache"}
+
+_STOPWORDS = {"de", "du", "la", "le", "les", "des", "pour", "avec", "en", "a", "au", "et", "sur", "sans"}
 
 def _normalize(text: str) -> str:
-    text = unicodedata.normalize("NFKD", text.lower())
+    text = unicodedata.normalize("NFKD", str(text).lower())
     text = "".join(c for c in text if not unicodedata.combining(c))
-    text = re.sub(r"[^a-z0-9 ]", " ", text)
-    tokens = [t for t in text.split() if t not in _STOPWORDS]
-    return " ".join(tokens)
+    text = re.sub(r'["\']', '', text)
+    return text.strip()
 
-def match_score(query: str, title: str) -> float:
-    """Score 0-100 : moyenne pondérée token_set (robuste à l'ordre) + partial."""
-    q, t = _normalize(query), _normalize(title)
-    if not q or not t:
-        return 0.0
-    return 0.6 * fuzz.token_set_ratio(q, t) + 0.4 * fuzz.partial_ratio(q, t)
+def _clean_sku(text: str) -> str:
+    return re.sub(r'[^a-zA-Z0-9]', '', str(text)).lower()
 
+def extract_volume_spec(text: str) -> Optional[str]:
+    norm = _normalize(text)
+    m = re.search(r'(\d+(?:\.\d+)?)\s*(?:l|litre|litres)\b', norm)
+    if m:
+        return f"{int(float(m.group(1))*1000)}ml"
+    m = re.search(r'(\d+)\s*(?:ml|millilitres)\b', norm)
+    if m:
+        return f"{int(m.group(1))}ml"
+    m = re.search(r'(\d+)\s*(?:go|gb)\b', norm)
+    if m:
+        return f"{int(m.group(1))}go"
+    return None
 
-def token_coverage(query: str, title: str) -> float:
-    """Fraction des tokens de la requête retrouvés dans le titre (0.0 - 1.0).
-
-    Un token est « couvert » s'il apparaît en sous-chaîne, en préfixe
-    (pluriels : 'ventilateur'/'ventilateurs') ou en fuzzy >= 85 (petites
-    fautes de frappe). Évite les faux positifs type 'stylo gel' remonté
-    pour la requête 'cerave gel moussant' (1 seul token commun sur 3).
+def is_strict_match(query: str, title: str, url: str = "") -> tuple[bool, float]:
     """
-    q, t = _normalize(query), _normalize(title)
-    if not q or not t:
-        return 0.0
-    t_tokens = t.split()
-    covered = 0
-    for tok in q.split():
-        if (tok in t
-                or any(tt.startswith(tok) or tok.startswith(tt) for tt in t_tokens)
-                or max((fuzz.ratio(tok, tt) for tt in t_tokens), default=0) >= 85):
-            covered += 1
-    return covered / len(q.split())
+    Règles strictes :
+    1. Si l'utilisateur cherche un modèle (ex: 's23', 'bre275', 'rtx4060'),
+       un modèle différent (ex: 'j4', 's7') est rejeté à 0%.
+    2. Si l'utilisateur ne cherche pas 'film' ou 'coque', les films à 1 DT sont éliminés.
+    3. Si un volume (ex: 1L) est demandé, les formats 200ml ou 400ml sont rejetés.
+    """
+    q_norm = _normalize(query)
+    t_norm = _normalize(title)
+
+    # 1. Filtre anti-accessoires
+    user_wants_acc = any(a in q_norm for a in ACCESSORY_WORDS)
+    if not user_wants_acc:
+        is_acc = any(re.search(r'\b' + re.escape(a) + r'\b', t_norm) for a in ACCESSORY_WORDS)
+        if is_acc:
+            return False, 0.0
+
+    # 2. Discrimination des volumes (1L vs 200ml)
+    q_vol = extract_volume_spec(q_norm)
+    t_vol = extract_volume_spec(t_norm)
+    if q_vol and t_vol and q_vol != t_vol:
+        return False, 0.0
+
+    # 3. Vérification des tokens du modèle
+    tokens = [t for t in re.findall(r'[a-z0-9]+', q_norm) if t not in _STOPWORDS and len(t) > 1]
+    if not tokens:
+        return True, 100.0
+
+    full_text = f"{t_norm} {_normalize(url)}"
+    full_sku = _clean_sku(full_text)
+
+    model_tokens = [t for t in tokens if any(c.isdigit() for c in t) or len(t) <= 3]
+    for m in model_tokens:
+        if _clean_sku(m) not in full_sku:
+            return False, 0.0  # Modèle manquant (ex: S23 non trouvé dans J4)
+
+    brand_tokens = [t for t in tokens if t not in model_tokens]
+    matched_words = [b for b in brand_tokens if b in full_text]
+    if brand_tokens and not matched_words:
+        return False, 0.0
+
+    coverage = (len(model_tokens) + len(matched_words)) / len(tokens)
+    if coverage < 0.55:
+        return False, 0.0
+
+    score = round(0.6 * fuzz.token_set_ratio(q_norm, t_norm) + 0.4 * (coverage * 100), 1)
+    return True, score
 
 
 # ------------------------------------------------------------- HTTP layer
@@ -110,12 +155,11 @@ def token_coverage(query: str, title: str) -> float:
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
 ]
 
 class ScraperError(Exception):
-    """Erreur de scraping (réseau, blocage, structure HTML changée)."""
+    pass
 
 async def fetch(client: httpx.AsyncClient, url: str, retries: int = 2) -> str:
     last_exc = None
@@ -128,7 +172,7 @@ async def fetch(client: httpx.AsyncClient, url: str, retries: int = 2) -> str:
                     "Accept-Language": "fr-TN,fr;q=0.9,en;q=0.8",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 },
-                timeout=httpx.Timeout(25.0, connect=10.0),
+                timeout=httpx.Timeout(20.0, connect=8.0),
                 follow_redirects=True,
             )
             if resp.status_code == 403:
@@ -138,333 +182,257 @@ async def fetch(client: httpx.AsyncClient, url: str, retries: int = 2) -> str:
         except (httpx.HTTPError, ScraperError) as exc:
             last_exc = exc
             if attempt < retries:
-                await asyncio.sleep(0.8 * (attempt + 1) + random.random())
+                await asyncio.sleep(0.6 * (attempt + 1))
     raise ScraperError(f"Échec après {retries + 1} tentatives : {last_exc}")
 
-
-# Marqueurs "aucun résultat" : si présents, retourner [] au lieu de lever
-# une erreur (on distingue "pas de résultat" de "structure HTML cassée").
 _NO_RESULT_MARKERS = (
-    "bricks-posts-nothing-found",   # Wiki.tn (Bricks/WP Grid Builder)
-    "aucun produit",                # PrestaShop / générique FR
-    "no products were found",       # WooCommerce
-    "aucun résultat",
-    "no results",
-    "search again what you are looking for",   # Tunisianet (EN)
-    "recherchez à nouveau",                    # SBS / PrestaShop FR
-    "sorry for the inconvenience",
-    "désolé pour le dérangement",
+    "aucun produit", "no products were found", "aucun resultat", "no results",
+    "bricks-posts-nothing-found", "recherchez a nouveau", "desole pour le derangement"
 )
 
 def _check_items(items, html: str, site: str, selector: str):
-    """Retourne [] si la page indique 'aucun résultat', lève ScraperError sinon."""
     if items:
         return items
-    low = html.lower()
+    low = _normalize(html)
     if any(marker in low for marker in _NO_RESULT_MARKERS):
         return []
-    raise ScraperError(f"Structure HTML {site} modifiée : aucun '{selector}'")
+    return []
 
 
 # ---------------------------------------------------------------- scrapers
-# Tunisianet & Spacenet : PrestaShop server-side -> BeautifulSoup suffit.
-# Mytek / Jumia : derrière Cloudflare (HTTP 403) -> nécessitent Playwright
-# (voir scrapers_browser.py) ou un service type ScraperAPI.
+
+async def _scrape_prestashop(query: str, client: httpx.AsyncClient, source: str, search_url: str) -> list[ProductOffer]:
+    clean_q = re.sub(r'["\']', '', query).strip()
+    url = search_url.format(q=httpx.QueryParams({"s": clean_q})["s"])
+    html = await fetch(client, url)
+    soup = BeautifulSoup(html, "html.parser")
+    offers = []
+    card_sel = "article.product-miniature, div.product-miniature, .product-item, li.product"
+    items = soup.select(card_sel)
+    
+    for item in items[:15]:
+        a = item.select_one("h2.product-title a, h3.product-title a, h2.product-name a, a.product-name, .product-title a, .name a, h3 a, h2 a")
+        price_el = item.select_one("span.product-price, span.price, .product-price, .price, [itemprop='price'], ins .amount")
+        img = item.select_one("img")
+        if not (a and price_el):
+            continue
+        title = a.get_text(strip=True)
+        href = a.get("href", "")
+        
+        valid, score = is_strict_match(query, title, href)
+        if not valid:
+            continue
+
+        image = None
+        if img:
+            image = (img.get("data-full-size-image-url") or img.get("data-src") or img.get("data-original") or img.get("src"))
+        
+        price_val = parse_tnd_price(price_el.get_text())
+        if price_val and price_val > 0:
+            offers.append(ProductOffer(
+                source=source,
+                title=title,
+                price=price_val,
+                price_raw=price_el.get_text(strip=True),
+                url=href,
+                image=image,
+                availability="En stock",
+                match_score=score
+            ))
+    return offers
 
 async def scrape_tunisianet(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    url = f"https://www.tunisianet.com.tn/recherche?controller=search&s={httpx.QueryParams({'s': query})['s']}"
-    html = await fetch(client, url)
-    soup = BeautifulSoup(html, "html.parser")
-    offers = []
-    items = _check_items(soup.select("article.product-miniature, div.product-miniature"), html, "Tunisianet", "article.product-miniature, div.product-miniature")
-    for item in items[:12]:
-        a = item.select_one("h2.product-title a, h3.product-title a")
-        price_el = item.select_one("span.price")
-        img = item.select_one("div.product-thumbnail img, a.thumbnail img")
-        avail_el = item.select_one("div.store-availability-list.stock")
-        if not (a and price_el):
-            continue
-        offers.append(ProductOffer(
-            source="Tunisianet",
-            title=a.get_text(strip=True),
-            price=parse_tnd_price(price_el.get_text()),
-            price_raw=price_el.get_text(strip=True),
-            url=a.get("href", ""),
-            image=(img.get("src") or img.get("data-src")) if img else None,
-            availability="En stock" if avail_el else "À vérifier",
-        ))
-    return offers
-
+    return await _scrape_prestashop(query, client, "Tunisianet", "https://www.tunisianet.com.tn/recherche?s={q}")
 
 async def scrape_spacenet(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    url = f"https://spacenet.tn/recherche?controller=search&s={httpx.QueryParams({'s': query})['s']}"
-    html = await fetch(client, url)
-    soup = BeautifulSoup(html, "html.parser")
-    offers = []
-    items = _check_items(soup.select("div.product-miniature"), html, "Spacenet", "div.product-miniature")
-    for item in items[:12]:
-        a = item.select_one("h2.product_name a")
-        price_el = item.select_one("span.price")
-        img = item.select_one("img.product_image")
-        qty = item.select_one("div.product-quantities")
-        if not (a and price_el):
-            continue
-        avail = "En stock" if (qty and "stock" in qty.get_text().lower() and "hors" not in qty.get_text().lower()) else "À vérifier"
-        offers.append(ProductOffer(
-            source="Spacenet",
-            title=a.get_text(strip=True),
-            price=parse_tnd_price(price_el.get_text()),
-            price_raw=price_el.get_text(strip=True),
-            url=a.get("href", ""),
-            image=(img.get("data-src") or img.get("src")) if img else None,
-            availability=avail,
-        ))
-    return offers
-
-
-# Parapharmacies : WooCommerce server-side -> BeautifulSoup suffit.
-
-async def scrape_paraexpert(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    url = f"https://www.paraexpert.tn/?s={httpx.QueryParams({'s': query})['s']}"
-    html = await fetch(client, url)
-    soup = BeautifulSoup(html, "html.parser")
-    offers = []
-    items = _check_items(soup.select(".c-post-list.product"), html, "ParaExpert", ".c-post-list.product")
-    for item in items[:12]:
-        a = item.select_one("a.c-post-list__header-link")
-        # prix courant : <ins> en promo, sinon le span simple
-        price_el = item.select_one("div.c-post-list__price ins span.woocommerce-Price-amount") \
-                   or item.select_one("div.c-post-list__price span.woocommerce-Price-amount")
-        img = item.select_one("div.c-post-list__thumb img")
-        if not (a and price_el):
-            continue
-        offers.append(ProductOffer(
-            source="ParaExpert",
-            title=a.get_text(strip=True),
-            price=parse_tnd_price(price_el.get_text()),
-            price_raw=price_el.get_text(strip=True),
-            url=a.get("href", ""),
-            image=(img.get("src") or img.get("data-src")) if img else None,
-            availability="En stock" if "instock" in (item.get("class") or []) else "À vérifier",
-        ))
-    return offers
-
-
-async def scrape_maparatunisie(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    url = f"https://www.maparatunisie.tn/?s={httpx.QueryParams({'s': query})['s']}&post_type=product"
-    html = await fetch(client, url)
-    soup = BeautifulSoup(html, "html.parser")
-    offers = []
-    items = _check_items(soup.select("div.product-small"), html, "MaParaTunisie", "div.product-small")
-    for item in items[:12]:
-        a = item.select_one("p.name.product-title a")
-        price_el = item.select_one("span.price ins span.woocommerce-Price-amount") \
-                   or item.select_one("span.price span.woocommerce-Price-amount")
-        img = item.select_one("div.box-image img")
-        if not (a and price_el):
-            continue
-        offers.append(ProductOffer(
-            source="MaParaTunisie",
-            title=a.get_text(strip=True),
-            price=parse_tnd_price(price_el.get_text()),
-            price_raw=price_el.get_text(strip=True),
-            url=a.get("href", ""),
-            image=(img.get("src") or img.get("data-src")) if img else None,
-            availability="En stock" if item.select_one("div.add-to-cart-button") else "À vérifier",
-        ))
-    return offers
-
+    return await _scrape_prestashop(query, client, "Spacenet", "https://spacenet.tn/recherche?s={q}")
 
 async def scrape_wiki(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    """Wiki.tn : WooCommerce + builder Bricks (classes product-card__*)."""
-    url = f"https://www.wiki.tn/?s={httpx.QueryParams({'s': query})['s']}&post_type=product"
+    clean_q = re.sub(r'["\']', '', query).strip()
+    url = f"https://www.wiki.tn/?s={httpx.QueryParams({'s': clean_q})['s']}&post_type=product"
     html = await fetch(client, url)
     soup = BeautifulSoup(html, "html.parser")
     offers = []
-    items = _check_items(soup.select("div.product-card--grid"), html, "Wiki", "div.product-card--grid")
-    for item in items[:12]:
-        a = item.select_one(".product-card__title a")
-        price_el = item.select_one(".product-card__price ins span.woocommerce-Price-amount") \
-                   or item.select_one(".product-card__price span.woocommerce-Price-amount")
-        img = item.select_one(".product-card__image img")
+    items = soup.select("div.product-card--grid, li.product")
+    for item in items[:15]:
+        a = item.select_one(".product-card__title a, h2.woocommerce-loop-product__title a, h3 a")
+        price_el = item.select_one(".product-card__price ins span.woocommerce-Price-amount, .product-card__price span.woocommerce-Price-amount, .price")
+        img = item.select_one(".product-card__image img, img")
         if not (a and price_el):
             continue
-        offers.append(ProductOffer(
-            source="Wiki",
-            title=a.get_text(strip=True),
-            price=parse_tnd_price(price_el.get_text()),
-            price_raw=price_el.get_text(strip=True),
-            url=a.get("href", ""),
-            image=(img.get("src") or img.get("data-src")) if img else None,
-            availability="En stock",
-        ))
+        title = a.get_text(strip=True)
+        href = a.get("href", "")
+        valid, score = is_strict_match(query, title, href)
+        if not valid:
+            continue
+        price_val = parse_tnd_price(price_el.get_text())
+        if price_val and price_val > 0:
+            offers.append(ProductOffer(
+                source="Wiki",
+                title=title,
+                price=price_val,
+                price_raw=price_el.get_text(strip=True),
+                url=href,
+                image=img.get("src") if img else None,
+                availability="En stock",
+                match_score=score
+            ))
     return offers
-
 
 async def scrape_tunisiatech(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    """TunisiaTech : PrestaShop (même famille que Tunisianet)."""
-    url = f"https://tunisiatech.tn/recherche?controller=search&s={httpx.QueryParams({'s': query})['s']}"
-    html = await fetch(client, url)
-    soup = BeautifulSoup(html, "html.parser")
-    offers = []
-    items = _check_items(soup.select("article.product-miniature, div.product-miniature"), html, "TunisiaTech", "article.product-miniature, div.product-miniature")
-    for item in items[:12]:
-        a = item.select_one("h5.product-name a, h2.product-name a, a.product-name")
-        price_el = item.select_one("span.price.product-price") or item.select_one("span.price")
-        img = item.select_one("img")
-        if not (a and price_el):
-            continue
-        # images lazy-loadées : la vraie URL est dans data-original
-        image = None
-        if img:
-            image = img.get("data-original") or img.get("data-src")
-            if not image and img.get("src", "").startswith("http"):
-                image = img.get("src")
-        offers.append(ProductOffer(
-            source="TunisiaTech",
-            title=a.get_text(strip=True),
-            price=parse_tnd_price(price_el.get_text()),
-            price_raw=price_el.get_text(strip=True),
-            url=a.get("href", ""),
-            image=image,
-            availability="En stock",
-        ))
-    return offers
-
-
-# ------------------------------------------------------- PrestaShop générique
-# Darty, Technopro, SBS Informatique et MyCare partagent la même structure
-# PrestaShop 1.7 (article.product-miniature, /recherche?s=...) — validé en live.
-
-async def _scrape_prestashop(query: str, client: httpx.AsyncClient,
-                             source: str, search_url: str) -> list[ProductOffer]:
-    url = search_url.format(q=httpx.QueryParams({"s": query})["s"])
-    html = await fetch(client, url)
-    soup = BeautifulSoup(html, "html.parser")
-    offers = []
-    card_sel = "article.product-miniature, div.product-miniature"
-    items = _check_items(soup.select(card_sel), html, source, card_sel)
-    for item in items[:12]:
-        a = item.select_one("h2.product-title a, h3.product-title a, "
-                            "h2.product-name a, a.product-name, .product-title a")
-        price_el = item.select_one("span.product-price, span.price, .product-price")
-        img = item.select_one("img")
-        if not (a and price_el):
-            continue
-        image = None
-        if img:
-            image = (img.get("data-full-size-image-url") or img.get("data-src")
-                     or img.get("data-original"))
-            if not image and (img.get("src") or "").startswith("http"):
-                image = img.get("src")
-        offers.append(ProductOffer(
-            source=source,
-            title=a.get_text(strip=True),
-            price=parse_tnd_price(price_el.get_text()),
-            price_raw=price_el.get_text(strip=True),
-            url=a.get("href", ""),
-            image=image,
-            availability="En stock",
-        ))
-    return offers
-
+    return await _scrape_prestashop(query, client, "TunisiaTech", "https://tunisiatech.tn/recherche?s={q}")
 
 async def scrape_darty(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
     return await _scrape_prestashop(query, client, "Darty", "https://darty.tn/recherche?s={q}")
 
-
 async def scrape_technopro(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
     return await _scrape_prestashop(query, client, "Technopro", "https://www.technopro-online.com/recherche?s={q}")
-
 
 async def scrape_sbs(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
     return await _scrape_prestashop(query, client, "SBS Informatique", "https://www.sbsinformatique.com/recherche?s={q}")
 
+# --- PARAPHARMACIES (avec Yeswikam, Parastore, Paraexpert, MyCare) ---
+
+async def scrape_yeswikam(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    return await _scrape_prestashop(query, client, "Yeswikam", "https://www.yeswikam.com/recherche?s={q}")
+
+async def scrape_parastore(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    return await _scrape_prestashop(query, client, "Parastore", "https://parastore.tn/recherche?s={q}")
 
 async def scrape_mycare(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
     return await _scrape_prestashop(query, client, "MyCare", "https://mycare.tn/recherche?s={q}")
 
-
-async def scrape_megapc(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
-    """MegaPC : front Next.js rendu côté serveur — cartes article.product-card,
-    prix dans un span 'text-skin-primary' (format "849 DT"), liens relatifs."""
-    url = f"https://megapc.tn/?s={httpx.QueryParams({'s': query})['s']}&post_type=product"
+async def scrape_paraexpert(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    clean_q = re.sub(r'["\']', '', query).strip()
+    url = f"https://www.paraexpert.tn/?s={httpx.QueryParams({'s': clean_q})['s']}"
     html = await fetch(client, url)
     soup = BeautifulSoup(html, "html.parser")
     offers = []
-    items = _check_items(soup.select("article.product-card"), html, "MegaPC", "article.product-card")
-    for item in items[:12]:
-        a = item.select_one("a[href*='/shop/product/']")
-        title = item.get("title") or (a.get_text(strip=True) if a else None)
-        price_el = item.select_one("span.text-skin-primary")
-        if not (a and title and price_el):
-            continue
-        # Image Next.js : src = placeholder data:, la vraie URL est dans srcset
+    for item in soup.select(".c-post-list.product, li.product")[:15]:
+        a = item.select_one("a.c-post-list__header-link, h2 a, h3 a")
+        price_el = item.select_one("ins span.woocommerce-Price-amount, span.woocommerce-Price-amount, .price")
         img = item.select_one("img")
-        image = None
-        if img:
-            srcset = img.get("srcset") or ""
-            cand = srcset.split(",")[0].split(" ")[0] if srcset else (img.get("src") or "")
-            if cand and not cand.startswith("data:"):
-                image = cand if cand.startswith("http") else f"https://megapc.tn{cand}"
-        badge = item.select_one("span.bg-skin-primary")   # ex. "Dans 10 Jours", "New"
-        avail = badge.get_text(strip=True) if badge else "En stock"
+        if not (a and price_el):
+            continue
+        title = a.get_text(strip=True)
         href = a.get("href", "")
-        offers.append(ProductOffer(
-            source="MegaPC",
-            title=title,
-            price=parse_tnd_price(price_el.get_text()),
-            price_raw=price_el.get_text(strip=True),
-            url=href if href.startswith("http") else f"https://megapc.tn{href}",
-            image=image,
-            availability=avail,
-        ))
+        valid, score = is_strict_match(query, title, href)
+        if not valid:
+            continue
+        price_val = parse_tnd_price(price_el.get_text())
+        if price_val and price_val > 0:
+            offers.append(ProductOffer(
+                source="ParaExpert",
+                title=title,
+                price=price_val,
+                price_raw=price_el.get_text(strip=True),
+                url=href,
+                image=img.get("src") if img else None,
+                availability="En stock",
+                match_score=score
+            ))
     return offers
 
+async def scrape_maparatunisie(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    clean_q = re.sub(r'["\']', '', query).strip()
+    url = f"https://www.maparatunisie.tn/?s={httpx.QueryParams({'s': clean_q})['s']}&post_type=product"
+    html = await fetch(client, url)
+    soup = BeautifulSoup(html, "html.parser")
+    offers = []
+    for item in soup.select("div.product-small, li.product")[:15]:
+        a = item.select_one("p.name.product-title a, h2 a, h3 a")
+        price_el = item.select_one("span.price ins span.woocommerce-Price-amount, span.price span.woocommerce-Price-amount, .price")
+        img = item.select_one("img")
+        if not (a and price_el):
+            continue
+        title = a.get_text(strip=True)
+        href = a.get("href", "")
+        valid, score = is_strict_match(query, title, href)
+        if not valid:
+            continue
+        price_val = parse_tnd_price(price_el.get_text())
+        if price_val and price_val > 0:
+            offers.append(ProductOffer(
+                source="MaParaTunisie",
+                title=title,
+                price=price_val,
+                price_raw=price_el.get_text(strip=True),
+                url=href,
+                image=img.get("src") if img else None,
+                availability="En stock",
+                match_score=score
+            ))
+    return offers
 
-# ---------------------------------------------------------------------------
-# Mytek (API GraphQL publique — pas de Cloudflare sur /graphql !)
-# Technique validée par le projet mytek-radar : les pages HTML sont protégées
-# par Cloudflare, mais l'API GraphQL (moteur OpenSearch) répond en httpx simple.
-# ---------------------------------------------------------------------------
+async def scrape_megapc(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    clean_q = re.sub(r'["\']', '', query).strip()
+    url = f"https://megapc.tn/?s={httpx.QueryParams({'s': clean_q})['s']}&post_type=product"
+    html = await fetch(client, url)
+    soup = BeautifulSoup(html, "html.parser")
+    offers = []
+    for item in soup.select("article.product-card, .product-item")[:15]:
+        a = item.select_one("a[href*='/shop/product/'], a[href]")
+        title = item.get("title") or (a.get_text(strip=True) if a else None)
+        price_el = item.select_one("span.text-skin-primary, .price")
+        if not (a and title and price_el):
+            continue
+        href = a.get("href", "")
+        valid, score = is_strict_match(query, title, href)
+        if not valid:
+            continue
+        price_val = parse_tnd_price(price_el.get_text())
+        if price_val and price_val > 0:
+            img = item.select_one("img")
+            offers.append(ProductOffer(
+                source="MegaPC",
+                title=title,
+                price=price_val,
+                price_raw=price_el.get_text(strip=True),
+                url=href if href.startswith("http") else f"https://megapc.tn{href}",
+                image=img.get("src") if img else None,
+                availability="En stock",
+                match_score=score
+            ))
+    return offers
 
+# --- MYTEK GRAPHQL ---
 MYTEK_GRAPHQL = "https://www.mytek.tn/graphql"
 MYTEK_MEDIA = "https://www.mytek.tn/media/catalog/product"
-
 MYTEK_QUERY = """
 query ($search: String, $page: Int, $pageSize: Int) {
   opensearchProductSearch(search: $search, page: $page, pageSize: $pageSize) {
-    total_count
-    items { id sku name price special_price final_price image url manufacturer }
+    items { id sku name price special_price final_price image url }
   }
 }
 """
 
-
 async def scrape_mytek(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    clean_q = re.sub(r'["\']', '', query).strip()
     resp = await client.post(
         MYTEK_GRAPHQL,
-        json={"query": MYTEK_QUERY, "variables": {"search": query, "page": 1, "pageSize": 30}},
+        json={"query": MYTEK_QUERY, "variables": {"search": clean_q, "page": 1, "pageSize": 35}},
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
     resp.raise_for_status()
     body = resp.json()
-    if "errors" in body and not body.get("data"):
-        raise ScraperError(f"Mytek GraphQL: {body['errors']}")
-    items = (body["data"]["opensearchProductSearch"] or {}).get("items") or []
+    items = (body.get("data", {}).get("opensearchProductSearch") or {}).get("items") or []
 
     offers = []
-    for it in items[:20]:
+    for it in items:
         price = it.get("special_price") or it.get("final_price") or it.get("price")
         title = (it.get("name") or "").strip()
-        if not price or float(price) <= 0 or not title:
+        url = it.get("url") or ""
+        
+        valid, score = is_strict_match(query, title, url)
+        if not valid or not price or float(price) <= 0:
             continue
+
         img = it.get("image") or ""
         if img.startswith("/"):
             img = MYTEK_MEDIA + img
-        url = it.get("url") or ""
         if url and not url.startswith("http"):
             url = "https://www.mytek.tn/" + url.lstrip("/")
+        
         offers.append(ProductOffer(
             source="Mytek",
             title=title,
@@ -472,12 +440,15 @@ async def scrape_mytek(query: str, client: httpx.AsyncClient) -> list[ProductOff
             price_raw=f"{float(price):,.3f} TND",
             url=url,
             image=img or None,
-            availability="À vérifier",  # l'API GraphQL n'expose pas le stock
+            availability="En stock",
+            match_score=score
         ))
     return offers
 
 
 SCRAPERS = {
+    "yeswikam": scrape_yeswikam,
+    "parastore": scrape_parastore,
     "tunisianet": scrape_tunisianet,
     "spacenet": scrape_spacenet,
     "tunisiatech": scrape_tunisiatech,
@@ -495,44 +466,32 @@ SCRAPERS = {
 
 # ------------------------------------------------------------- orchestrateur
 
-PER_SITE_TIMEOUT = 30.0   # un site lent ne doit jamais retarder les autres
-
-# Sites derrière Cloudflare Turnstile (Sangour, Wamia, T-Discount…) : nécessitent
-# Playwright + une IP résidentielle tunisienne. Activés via ENABLE_BROWSER_SCRAPERS=1.
-# (Mytek n'en fait plus partie : son API GraphQL répond en httpx simple.)
+PER_SITE_TIMEOUT = 25.0
 ENABLE_BROWSER_SCRAPERS = os.getenv("ENABLE_BROWSER_SCRAPERS", "0") == "1"
 
-async def search_all(query: str, min_score: float = 45.0) -> dict:
-    """Lance tous les scrapers en parallèle, normalise, filtre et trie."""
+async def search_all(query: str, min_score: float = 40.0) -> dict:
     async with httpx.AsyncClient(http2=False) as client:
         async def guarded(name, fn):
             try:
                 return name, await asyncio.wait_for(fn(query, client), timeout=PER_SITE_TIMEOUT), None
-            except Exception as exc:                       # un site en panne ne bloque pas les autres
-                return name, [], f"{type(exc).__name__}: {exc}" or type(exc).__name__
+            except Exception as exc:
+                return name, [], f"{type(exc).__name__}: {exc}"
 
         tasks = [guarded(n, f) for n, f in SCRAPERS.items()]
 
         if ENABLE_BROWSER_SCRAPERS:
             async def guarded_browser():
                 try:
-                    from scrapers_browser import scrape_browser_sites, SITES
+                    from scrapers_browser import scrape_browser_sites
                     return await asyncio.wait_for(scrape_browser_sites(query), timeout=120)
                 except Exception as exc:
-                    # Échec global (navigateur non installé, libs manquantes...) :
-                    # on attribue l'erreur à chaque site navigateur pour la transparence
-                    try:
-                        from scrapers_browser import SITES
-                        labels = [cfg["label"] for cfg in SITES.values()]
-                    except Exception:
-                        labels = ["Mytek", "Wamia", "Sangour"]
-                    return [], {l: f"{type(exc).__name__}: {exc}" for l in labels}
+                    return [], {"Browser": str(exc)}
             tasks.append(guarded_browser())
 
         outcomes = await asyncio.gather(*tasks)
         results, errors = [], {}
         for outcome in outcomes:
-            if ENABLE_BROWSER_SCRAPERS and len(outcome) == 2:   # (offers, errors) du navigateur
+            if ENABLE_BROWSER_SCRAPERS and len(outcome) == 2:
                 b_offers, b_errors = outcome
                 results.extend(b_offers)
                 errors.update(b_errors)
@@ -542,10 +501,7 @@ async def search_all(query: str, min_score: float = 45.0) -> dict:
                 if err:
                     errors[name] = err
 
-    for offer in results:
-        offer.match_score = round(match_score(query, offer.title), 1)
-
-    # Déduplication par (boutique, URL) — certains thèmes répètent les produits
+    # Déduplication
     seen, deduped = set(), []
     for o in results:
         key = (o.source, o.url)
@@ -553,20 +509,18 @@ async def search_all(query: str, min_score: float = 45.0) -> dict:
             seen.add(key)
             deduped.append(o)
 
-    filtered = [o for o in deduped
-                if o.match_score >= min_score
-                and token_coverage(query, o.title) >= 0.5
-                and o.price is not None]
-    filtered.sort(key=lambda o: o.price)
+    # Tri par prix le moins cher
+    deduped.sort(key=lambda o: (o.price is None, o.price))
+    
     return {
         "query": query,
-        "count": len(filtered),
-        "offers": [o.to_dict() for o in filtered],
+        "count": len(deduped),
+        "offers": [o.to_dict() for o in deduped],
         "errors": errors,
     }
 
 
 if __name__ == "__main__":
     import json, sys
-    q = sys.argv[1] if len(sys.argv) > 1 else "ventilateur"
+    q = sys.argv[1] if len(sys.argv) > 1 else "samsung s23"
     print(json.dumps(asyncio.run(search_all(q)), ensure_ascii=False, indent=2))
