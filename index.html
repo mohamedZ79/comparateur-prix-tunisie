@@ -4,39 +4,69 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PrixTN — Comparateur de prix tunisien</title>
+<meta name="description" content="Comparez les prix de milliers de produits sur les boutiques tunisiennes : high-tech, électroménager, parapharmacie, maison. Le meilleur prix, vérifié chaque nuit.">
+<meta property="og:title" content="PrixTN — Comparateur de prix tunisien">
+<meta property="og:description" content="Le meilleur prix, en direct, sur les boutiques tunisiennes.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e70013'/%3E%3Ctext x='16' y='22' font-size='14' font-weight='bold' fill='white' text-anchor='middle' font-family='Arial'%3ETN%3C/text%3E%3C/svg%3E">
 <style>
-  :root { --red:#e70013; --bg:#f6f7f9; --card:#fff; --txt:#1a1a2e; }
+  :root {
+    --red:#e70013; --red-d:#c00010; --bg:#f6f7f9; --card:#fff; --txt:#1a1a2e;
+    --muted:#777; --badge-bg:#eef0f3; --border:#e2e4e8; --placeholder:#f1f2f4;
+    --chip:#fff; --chip-active:#1a1a2e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#12131a; --card:#1c1e2a; --txt:#e8e9ee; --muted:#9a9cad;
+      --badge-bg:#262838; --border:#2c2f42; --placeholder:#22242f;
+      --chip:#1c1e2a; --chip-active:#e8e9ee;
+    }
+  }
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--txt); }
   header { background:linear-gradient(135deg,#e70013,#b0000f); color:#fff; padding:2.5rem 1rem 4.5rem; text-align:center; }
   header h1 { font-size:1.8rem; letter-spacing:.5px; }
   header p { opacity:.85; margin-top:.3rem; font-size:.95rem; }
-  .search-box { max-width:640px; margin:-2rem auto 0; display:flex; background:#fff; border-radius:14px;
+  .search-wrap { max-width:640px; margin:-2rem auto 0; position:relative; padding:0 1rem; }
+  .search-box { display:flex; background:var(--card); border-radius:14px;
                 box-shadow:0 8px 30px rgba(0,0,0,.15); overflow:hidden; }
-  .search-box input { flex:1; border:none; padding:1rem 1.2rem; font-size:1rem; outline:none; }
+  .search-box input { flex:1; border:none; padding:1rem 1.2rem; font-size:1rem; outline:none; background:var(--card); color:var(--txt); }
   .search-box button { background:var(--red); color:#fff; border:none; padding:0 1.6rem; font-size:1rem;
                        cursor:pointer; font-weight:600; transition:background .2s; }
-  .search-box button:hover { background:#c00010; }
+  .search-box button:hover { background:var(--red-d); }
   .search-box button:disabled { background:#999; cursor:wait; }
+  .suggest { position:absolute; top:calc(100% + 4px); left:1rem; right:1rem; background:var(--card);
+             border-radius:10px; box-shadow:0 10px 34px rgba(0,0,0,.22); overflow:hidden; z-index:50; }
+  .suggest div { padding:.6rem 1.1rem; cursor:pointer; font-size:.92rem; }
+  .suggest div:hover, .suggest div.sel { background:var(--badge-bg); }
   main { max-width:900px; margin:2rem auto; padding:0 1rem; }
-  #status { text-align:center; color:#666; margin:1.5rem 0; min-height:1.4rem; }
-  .spinner { display:inline-block; width:18px; height:18px; border:3px solid #ddd; border-top-color:var(--red);
+  #status { text-align:center; color:var(--muted); margin:1.5rem 0; min-height:1.4rem; }
+  .spinner { display:inline-block; width:18px; height:18px; border:3px solid var(--border); border-top-color:var(--red);
              border-radius:50%; animation:spin .8s linear infinite; vertical-align:middle; margin-right:.5rem; }
   @keyframes spin { to { transform:rotate(360deg); } }
+  .toolbar { display:none; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:1rem; justify-content:center; }
+  .toolbar.show { display:flex; }
+  .sort-btn, .chip { background:var(--chip); border:1px solid var(--border); color:var(--txt); border-radius:20px;
+                     padding:.3rem .85rem; font-size:.78rem; cursor:pointer; transition:all .15s; }
+  .sort-btn.active, .chip.active { background:var(--chip-active); color:var(--bg); border-color:var(--chip-active); font-weight:600; }
+  .sep { width:1px; height:1.4rem; background:var(--border); margin:0 .3rem; }
   .card { display:flex; gap:1rem; background:var(--card); border-radius:12px; padding:1rem; margin-bottom:.8rem;
           box-shadow:0 2px 8px rgba(0,0,0,.06); align-items:center; transition:transform .15s; }
   .card:hover { transform:translateY(-2px); }
   .card.best { border:2px solid var(--red); position:relative; }
   .card.best::before { content:"🏆 MEILLEUR PRIX"; position:absolute; top:-11px; left:14px; background:var(--red);
                        color:#fff; font-size:.68rem; font-weight:700; padding:2px 10px; border-radius:10px; }
-  .card img { width:90px; height:90px; object-fit:contain; border-radius:8px; background:#fff; flex-shrink:0; }
+  .card img { width:90px; height:90px; object-fit:contain; border-radius:8px; background:var(--card); flex-shrink:0; }
+  .card img.placeholder { background:var(--placeholder); }
   .card .info { flex:1; min-width:0; }
   .card .title { font-weight:600; font-size:.95rem; margin-bottom:.25rem; }
-  .card .meta { font-size:.8rem; color:#777; }
-  .badge { display:inline-block; background:#eef0f3; border-radius:6px; padding:1px 8px; font-size:.75rem; margin-right:.4rem; }
+  .card .meta { font-size:.8rem; color:var(--muted); }
+  .badge { display:inline-block; background:var(--badge-bg); border-radius:6px; padding:1px 8px; font-size:.75rem; margin-right:.4rem; }
+  .badge.stale { background:rgba(230,150,0,.15); color:#b07500; }
   .stock { color:#0a8a3a; font-weight:600; }
+  .stock.oos { color:#b00; }
   .price { font-size:1.25rem; font-weight:800; color:var(--red); white-space:nowrap; text-align:right; }
-  .price small { display:block; font-size:.7rem; color:#999; font-weight:400; }
+  .price small { display:block; font-size:.7rem; color:var(--muted); font-weight:400; }
   a.card-link { text-decoration:none; color:inherit; }
   #errors { font-size:.8rem; color:#b00; text-align:center; margin-top:1rem; }
 </style>
@@ -45,88 +75,169 @@
 
 <header>
   <h1>🇹🇳 PrixTN</h1>
-  <p>Le meilleur prix, en direct, sur les boutiques tunisiennes</p>
+  <p>Le meilleur prix, vérifié chaque nuit sur les boutiques tunisiennes</p>
 </header>
 
-<form class="search-box" id="form">
-  <input id="q" type="text" placeholder="Ex : Ventilateur Orient, Samsung S23, PC portable i5…" required minlength="2">
-  <button id="btn" type="submit">Comparer</button>
-</form>
+<div class="search-wrap">
+  <form class="search-box" id="form" autocomplete="off">
+    <input id="q" type="text" placeholder="Ex : Ventilateur Orient, Samsung S23, PC portable i5…" required minlength="2"
+           aria-label="Produit à comparer" role="combobox" aria-expanded="false" aria-autocomplete="list">
+    <button id="btn" type="submit">Comparer</button>
+  </form>
+  <div class="suggest" id="suggest" role="listbox" hidden></div>
+</div>
 
 <main>
   <div id="status"></div>
+  <div class="toolbar" id="toolbar">
+    <button class="sort-btn active" data-sort="relevance" aria-label="Trier par pertinence">Pertinence</button>
+    <button class="sort-btn" data-sort="price-asc" aria-label="Trier par prix croissant">Prix ↑</button>
+    <button class="sort-btn" data-sort="price-desc" aria-label="Trier par prix décroissant">Prix ↓</button>
+    <span class="sep" id="sep"></span>
+    <span id="chips" style="display:flex;gap:.5rem;flex-wrap:wrap"></span>
+  </div>
   <div id="results"></div>
   <div id="errors"></div>
 </main>
 
 <script>
-// ✅ Détection automatique : Localhost en dev, Render en production sur Netlify
-const API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-  ? 'http://127.0.0.1:8000/api/search'
-  : 'https://api-comparateur-tunisie.onrender.com/api/search';
+// API en chemin relatif : fonctionne en local (uvicorn sert index.html) et
+// en production (le proxy Netlify de netlify.toml route /api/* vers Render).
+// Plus d'URL absolue dupliquée (audit F-21).
+const API = '/api/search';
+const SUGGEST_API = '/api/suggest';
 
 const form = document.getElementById('form');
+const input = document.getElementById('q');
+const suggestBox = document.getElementById('suggest');
 const statusEl = document.getElementById('status');
 const resultsEl = document.getElementById('results');
 const errorsEl = document.getElementById('errors');
+const toolbar = document.getElementById('toolbar');
+const chipsEl = document.getElementById('chips');
 const btn = document.getElementById('btn');
 
 const fmt = new Intl.NumberFormat('fr-TN', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
 
+let currentOffers = [];      // résultats de la dernière recherche
+let activeShops = new Set(); // filtres boutique actifs
+let currentSort = 'relevance';
+
+// ------------------------------------------------------------- sécurité
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// F-20 : seules les URL http(s) sont acceptées, et échappées pour l'attribut
+const safeImg = u => /^https?:\/\//.test(u || '') ? escapeHtml(u) : '';
+const PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 90 90'%3E%3Crect width='90' height='90' rx='8' fill='%23f1f2f4'/%3E%3Ctext x='45' y='52' font-size='11' fill='%23aab' text-anchor='middle' font-family='Arial'%3EProduit%3C/text%3E%3C/svg%3E";
+
+// --------------------------------------------------------- recherche
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const q = document.getElementById('q').value.trim();
+  const q = input.value.trim();
   if (q.length < 2) return;
+  closeSuggest();
 
   btn.disabled = true;
   resultsEl.innerHTML = '';
   errorsEl.innerHTML = '';
-  statusEl.innerHTML = '<span class="spinner"></span>Recherche en direct sur les boutiques…';
-  
-  // Message informatif si Render est en cours de réveil
-  const timer = setTimeout(() => {
-    statusEl.innerHTML = '<span class="spinner"></span>⚡ Réveil du serveur Cloud en cours, veuillez patienter quelques secondes…';
-  }, 4000);
+  toolbar.classList.remove('show');
+  statusEl.innerHTML = '<span class="spinner"></span>Recherche dans le catalogue…';
 
   const t0 = performance.now();
-
   try {
-    const res = await fetch(API + '?q=' + encodeURIComponent(q));
-    clearTimeout(timer);
-
+    const res = await fetch(API + '?q=' + encodeURIComponent(q) + '&limit=60');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const dt = ((performance.now() - t0) / 1000).toFixed(1);
 
     if (!data.offers || data.offers.length === 0) {
-      statusEl.textContent = `Aucune offre trouvée pour « ${q} » (${dt}s).`;
+      statusEl.textContent = data.error
+        ? '⚠️ ' + data.error
+        : `Aucune offre trouvée pour « ${q} » (${dt}s).`;
     } else {
-      statusEl.textContent = `${data.offers.length} offres en ${dt}s ${data.cached ? '(cache ⚡)' : '(scraping live 🔄)'}`;
-      data.offers.forEach((o, i) => resultsEl.appendChild(renderCard(o, i === 0)));
-    }
-    if (data.errors && Object.keys(data.errors).length) {
-      errorsEl.textContent = '⚠️ Boutiques indisponibles : ' + Object.keys(data.errors).join(', ');
+      currentOffers = data.offers;
+      activeShops = new Set(currentOffers.map(o => o.source));
+      statusEl.textContent = `${data.total || currentOffers.length} offres · ${dt}s · catalogue actualisé chaque nuit`;
+      renderToolbar();
+      render();
     }
   } catch (err) {
-    clearTimeout(timer);
     statusEl.textContent = '❌ Erreur : ' + err.message;
   } finally {
     btn.disabled = false;
   }
 });
 
+// ------------------------------------------------------- rendu + filtres
+function visibleOffers() {
+  let list = currentOffers.filter(o => activeShops.has(o.source));
+  if (currentSort === 'price-asc')  list = [...list].sort((a, b) => a.price - b.price);
+  if (currentSort === 'price-desc') list = [...list].sort((a, b) => b.price - a.price);
+  // relevance : ordre serveur (déjà trié par pertinence puis prix)
+  return list;
+}
+
+function renderToolbar() {
+  toolbar.classList.add('show');
+  document.querySelectorAll('.sort-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.sort === currentSort);
+  });
+  const shops = [...new Set(currentOffers.map(o => o.source))];
+  chipsEl.innerHTML = '';
+  shops.forEach(s => {
+    const c = document.createElement('button');
+    c.className = 'chip' + (activeShops.has(s) ? ' active' : '');
+    c.textContent = s;
+    c.setAttribute('aria-label', 'Filtrer par ' + s);
+    c.onclick = () => {
+      if (activeShops.has(s)) activeShops.delete(s); else activeShops.add(s);
+      renderToolbar(); render();
+    };
+    chipsEl.appendChild(c);
+  });
+}
+
+document.querySelectorAll('.sort-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    currentSort = b.dataset.sort;
+    renderToolbar(); render();
+  });
+});
+
+function priceAgeLabel(hours) {
+  if (hours == null) return '';
+  if (hours < 1) return 'vu à l\'instant';
+  if (hours < 24) return `vu il y a ${Math.round(hours)} h`;
+  return `vu il y a ${Math.round(hours / 24)} j`;
+}
+
+function render() {
+  resultsEl.innerHTML = '';
+  const list = visibleOffers();
+  const best = list.length ? Math.min(...list.map(o => o.price)) : null;
+  list.forEach((o, i) => resultsEl.appendChild(renderCard(o, o.price === best)));
+}
+
 function renderCard(o, isBest) {
   const a = document.createElement('a');
   a.href = o.url; a.target = '_blank'; a.rel = 'noopener'; a.className = 'card-link';
+  const age = o.price_age_hours;
+  const ageBadge = age != null
+    ? `<span class="badge${age > 168 ? ' stale' : ''}">${escapeHtml(priceAgeLabel(age))}</span>` : '';
   a.innerHTML = `
     <div class="card ${isBest ? 'best' : ''}">
-      <img src="${o.image || ''}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+      <img src="${safeImg(o.image) || PLACEHOLDER}" alt="" loading="lazy"
+           class="${o.image ? '' : 'placeholder'}"
+           onerror="this.onerror=null;this.src='${PLACEHOLDER}';this.classList.add('placeholder')">
       <div class="info">
         <div class="title">${escapeHtml(o.title)}</div>
         <div class="meta">
-          <span class="badge">${o.source}</span>
-          <span class="stock">${escapeHtml(o.availability || 'En stock')}</span>
-          ${o.match_score ? `<span class="badge">pertinence ${o.match_score}%</span>` : ''}
+          <span class="badge">${escapeHtml(o.source)}</span>
+          <span class="stock ${o.availability === 'En stock' ? '' : 'oos'}">${escapeHtml(o.availability || 'En stock')}</span>
+          ${o.match_score ? `<span class="badge">pertinence ${Math.round(o.match_score)}%</span>` : ''}
+          ${ageBadge}
         </div>
       </div>
       <div class="price">${o.price != null ? fmt.format(o.price) + ' TND' : '—'}<small>${escapeHtml(o.price_raw || '')}</small></div>
@@ -134,14 +245,67 @@ function renderCard(o, isBest) {
   return a;
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// -------------------------------------------------------- autocomplétion
+let suggestTimer = null, suggestItems = [], suggestIdx = -1;
+
+input.addEventListener('input', () => {
+  clearTimeout(suggestTimer);
+  const q = input.value.trim();
+  if (q.length < 2) { closeSuggest(); return; }
+  suggestTimer = setTimeout(() => fetchSuggest(q), 250);
+});
+
+async function fetchSuggest(q) {
+  try {
+    const res = await fetch(SUGGEST_API + '?q=' + encodeURIComponent(q));
+    if (!res.ok) return;
+    const data = await res.json();
+    suggestItems = data.suggestions || [];
+    suggestIdx = -1;
+    if (!suggestItems.length) { closeSuggest(); return; }
+    suggestBox.innerHTML = '';
+    suggestItems.forEach((s, i) => {
+      const d = document.createElement('div');
+      d.textContent = s; d.setAttribute('role', 'option');
+      d.onclick = () => { input.value = s; closeSuggest(); form.requestSubmit(); };
+      suggestBox.appendChild(d);
+    });
+    suggestBox.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  } catch (_) { /* silencieux : l'autocomplétion est optionnelle */ }
 }
 
-// Recherche via paramètre d'URL (?q=...) — liens partageables
+function closeSuggest() {
+  suggestBox.hidden = true; suggestItems = []; suggestIdx = -1;
+  input.setAttribute('aria-expanded', 'false');
+}
+
+input.addEventListener('keydown', (e) => {
+  if (suggestBox.hidden) return;
+  const items = [...suggestBox.children];
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    suggestIdx = e.key === 'ArrowDown'
+      ? Math.min(suggestIdx + 1, items.length - 1)
+      : Math.max(suggestIdx - 1, 0);
+    items.forEach((el, i) => el.classList.toggle('sel', i === suggestIdx));
+  } else if (e.key === 'Enter' && suggestIdx >= 0) {
+    e.preventDefault();
+    input.value = items[suggestIdx].textContent;
+    closeSuggest(); form.requestSubmit();
+  } else if (e.key === 'Escape') {
+    closeSuggest();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-wrap')) closeSuggest();
+});
+
+// ------------------------------------------- recherche via ?q= (partage)
 const qp = new URLSearchParams(location.search).get('q');
 if (qp && qp.trim().length >= 2) {
-  document.getElementById('q').value = qp.trim();
+  input.value = qp.trim();
   form.requestSubmit();
 }
 </script>

@@ -34,6 +34,14 @@ class ProductOffer:
 # ------------------------------------------------------- parsing des prix
 
 def parse_tnd_price(raw: str) -> Optional[float]:
+    """Parse a Tunisian price string into a float TND value.
+
+    Handles: "9,900 DT" -> 9.9 | "1 299,000 TND" -> 1299.0 |
+    "249DT000" -> 249.0 (Carrefour) | "131.370" -> 131.37 |
+    "1.299,000 DT" -> 1299.0 | promo strings (last amount wins).
+    Single source of truth: crawler.py and scrapers_browser.py import
+    this function - do NOT duplicate it (audit finding F-12).
+    """
     if not raw:
         return None
     cleaned = unicodedata.normalize("NFKD", str(raw)).strip().lower()
@@ -43,13 +51,30 @@ def parse_tnd_price(raw: str) -> Optional[float]:
     if carrefour_match:
         return float(f"{carrefour_match.group(1)}.{carrefour_match.group(2)}")
 
-    # 2. Nettoyage des devises et des espaces de milliers (ex: "3 999,000 DT" -> "3999.000")
+    # 2. Amounts anchored to a currency word. Prefer the LAST match so that
+    #    promo noise ("Economisez 20 DT ... payez 45,900 DT") resolves to the
+    #    real price. Captures thousands groups: "1 299,000" / "1.299,000".
+    amounts = re.findall(
+        r'(\d+(?:[ \u00a0.]\d{3})*(?:,\d{2,3})?)\s*(?:dt|tnd|d\.t|dinars?)\b',
+        cleaned)
+    if amounts:
+        s = amounts[-1].replace(" ", "").replace("\u00a0", "")
+        if "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif re.fullmatch(r"\d{1,3}(\.\d{3}){2,}", s):
+            s = s.replace(".", "")
+        try:
+            return round(float(s), 3)
+        except ValueError:
+            pass
+
+    # 3. Fallback: strip currency, take the first bare number
+    #    (covers "131.370" with no currency suffix)
     cleaned = re.sub(r'(?:dt|tnd|dinars?|d\.t)', '', cleaned).strip()
-    
     if "," in cleaned:
         cleaned = cleaned.replace(" ", "").replace(".", "").replace(",", ".")
     else:
-        cleaned = cleaned.replace(" ", "")
+        cleaned = cleaned.replace(" ", "").replace("\u00a0", "")
         if re.fullmatch(r"\d{1,3}(\.\d{3}){2,}", cleaned):
             cleaned = cleaned.replace(".", "")
 
@@ -167,6 +192,55 @@ async def fetch(client: httpx.AsyncClient, url: str, retries: int = 1) -> str:
     raise ScraperError(f"Échec sur {url} : {last_exc}")
 
 
+# --------------------------------------------- extraction robuste du titre
+
+# Textes d'interface a ignorer dans le repli generique
+_UI_TEXTS = {"aperçu rapide", "quick view", "favoris", "comparer",
+             "ajouter au panier", "add to cart", "détails", "details",
+             "acheter", "buy", "voir le produit", "en savoir plus",
+             "read more", "favorite_border", "balance"}
+
+def extract_title_link(card) -> Optional[tuple]:
+    """Extrait (titre, href) d'une carte produit, robuste aux themes.
+
+    Certains themes PrestaShop (yeswikam, darty, sbs - verifie aout 2026)
+    ne mettent PAS le titre du produit dans le heading : le heading porte
+    la marque ("SVR", "VICHY") ou rien, et le vrai titre vit dans une
+    ancre simple de la carte. Strategie :
+      1. selecteurs de titres classiques (PrestaShop/Woo) si texte >= 10,
+      2. sinon repli generique : l'ancre produit au texte le plus long
+         (liens marque/categorie/UI exclus),
+      3. en dernier recours, le heading court.
+    """
+    a = card.select_one(
+        "h2.product_name a, .product_name a, h2.product-title a, "
+        "h3.product-title a, h2.product-name a, a.product-name, "
+        ".product-title a, .woocommerce-loop-product__title a, "
+        ".wd-entities-title a, .name a")
+    if a:
+        text = a.get_text(strip=True)
+        if len(text) >= 10:
+            return text, a.get("href", "")
+
+    best_text, best_href = "", ""
+    for link in card.select("a[href]"):
+        href = link.get("href") or ""
+        text = link.get_text(strip=True)
+        if not href or href.startswith("#"):
+            continue
+        if "/marque/" in href or "/brand/" in href or "/manufacturer" in href:
+            continue
+        if not text or text.lower() in _UI_TEXTS or len(text) < 10:
+            continue
+        if len(text) > len(best_text):
+            best_text, best_href = text, href
+    if best_text:
+        return best_text, best_href
+    if a:
+        return a.get_text(strip=True), a.get("href", "")
+    return None
+
+
 # ---------------------------------------------------------------- scrapers
 
 async def _scrape_prestashop(query: str, client: httpx.AsyncClient, source: str, search_url: str) -> list[ProductOffer]:
@@ -182,18 +256,14 @@ async def _scrape_prestashop(query: str, client: httpx.AsyncClient, source: str,
     
     # ✅ Analyse TOUTES les cartes de la page (pas de limitation à 15 pour ne pas rater les téléphones !)
     for item in items:
-        a = item.select_one(
-            "h2.product_name a, .product_name a, h2.product-title a, h3.product-title a, "
-            "h2.product-name a, a.product-name, .product-title a, .name a, h3 a, h2 a, a[title]"
-        )
+        extracted = extract_title_link(item)
         price_el = item.select_one("span.product-price, span.price, .product-price, .price, [itemprop='price'], ins .amount")
         img = item.select_one("img.product_image, .thumbnail-container img, .product-thumbnail img, img")
-        
-        if not (a and price_el):
+
+        if not (extracted and price_el):
             continue
-            
-        title = a.get_text(strip=True)
-        href = a.get("href", "")
+
+        title, href = extracted
         
         valid, score = is_strict_match(query, title, href)
         if not valid:
@@ -237,6 +307,65 @@ async def scrape_yeswikam(query: str, client: httpx.AsyncClient) -> list[Product
 
 async def scrape_mycare(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
     return await _scrape_prestashop(query, client, "MyCare", "https://mycare.tn/recherche?s={q}")
+
+# --- DREST - WooCommerce Store API (JSON public, pas de Cloudflare) ---
+# Decouverte de l'audit 2026 : drest.tn expose l'API Store WooCommerce
+# (https://drest.tn/wp-json/wc/store/products) qui repond en JSON sans
+# challenge. Necessite seulement un User-Agent navigateur. 27 000+ produits.
+import html as _html  # noqa: E402
+
+DREST_STORE_API = "https://drest.tn/wp-json/wc/store/products"
+
+async def scrape_drest(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    clean_q = re.sub(r'["\']', '', query).strip()
+    try:
+        resp = await client.get(
+            DREST_STORE_API,
+            params={"search": clean_q, "per_page": 24},
+            headers={
+                "User-Agent": random.choice(USER_AGENTS),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "fr-TN,fr;q=0.9,en;q=0.8",
+            },
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        items = resp.json()
+    except Exception:
+        return []
+
+    offers = []
+    for it in items:
+        title = _html.unescape((it.get("name") or "")).strip()
+        prices = it.get("prices") or {}
+        minor = int(prices.get("currency_minor_unit") or 0)
+        raw_price = prices.get("price") or prices.get("regular_price")
+        url = it.get("permalink") or ""
+        if not title or not raw_price:
+            continue
+        try:
+            price_val = round(int(raw_price) / (10 ** minor), 3)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if price_val <= 0:
+            continue
+
+        valid, score = is_strict_match(query, title, url)
+        if not valid:
+            continue
+
+        images = it.get("images") or []
+        offers.append(ProductOffer(
+            source="Drest",
+            title=title,
+            price=price_val,
+            price_raw=f"{price_val:,.3f} TND",
+            url=url,
+            image=images[0].get("src") if images else None,
+            availability="En stock" if it.get("is_in_stock") else "Rupture",
+            match_score=score,
+        ))
+    return offers
 
 # --- MYTEK GRAPHQL ---
 MYTEK_GRAPHQL = "https://www.mytek.tn/graphql"
@@ -299,6 +428,22 @@ SCRAPERS = {
     "technopro": scrape_technopro,
     "sbs": scrape_sbs,
     "mycare": scrape_mycare,
+    "drest": scrape_drest,
+}
+
+# Categorie de chaque boutique - source de verite unique pour la CI
+# (audit F-08 : scraper-health.yml listait des boutiques fantomes ;
+#  la CI derive maintenant ses ensembles depuis ce dictionnaire).
+SHOP_CATEGORY = {
+    "spacenet": "electronics",
+    "mytek": "electronics",
+    "tunisianet": "electronics",
+    "darty": "electronics",
+    "technopro": "electronics",
+    "sbs": "electronics",
+    "yeswikam": "parapharmacie",
+    "mycare": "parapharmacie",
+    "drest": "parapharmacie",
 }
 
 # ------------------------------------------------------------- orchestrateur

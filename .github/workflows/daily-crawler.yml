@@ -2,8 +2,12 @@ name: Daily Catalog Crawler
 
 on:
   schedule:
-    - cron: "0 3 * * *"    # Tourne automatiquement toutes les nuits à 03h00
-  workflow_dispatch:        # Permet de le lancer d'un simple clic quand vous voulez !
+    - cron: "0 3 * * *"    # Nuit à 03h00 UTC
+  workflow_dispatch:        # Lancement manuel possible
+
+concurrency:
+  group: crawler
+  cancel-in-progress: false
 
 jobs:
   crawl:
@@ -12,12 +16,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Installer les dépendances
         run: pip install -r requirements.txt
 
-      - name: Lancer le Crawler vers Supabase
+      # PROXY_URL (optionnel) : proxy résidentiel tunisien - débloque
+      # Sangour, Wamia, T-Discount, Scoop, Graiet, Maalej, Affariyet,
+      # Bricorama, Electro Tounes (challenge Cloudflare vérifié en aout 2026
+      # sur TOUTES les requêtes datacenter, y compris /wp-json et sitemaps).
+      - name: Lancer le crawler vers Supabase
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python crawler.py
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+        run: |
+          python crawler.py
+          echo "Crawl terminé avec succès"
+
+      # Le crawler sort en code 1 s'il collecte zéro produit : la CI échoue,
+      # GitHub envoie l'email d'alerte - plus de données qui vieillissent
+      # en silence (audit F-11).

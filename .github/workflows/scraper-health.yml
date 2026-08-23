@@ -10,62 +10,65 @@ on:
 jobs:
   smoke-test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "${{ matrix.python-version }}"
 
       - name: Installer les dépendances
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
+
+      # F-08 (fix) : importe TOUS les modules - aurait détecté l'ImportError
+      # match_score (F-01) le jour où il a atterri sur main.
+      - name: Import smoke test
+        run: python -c "import scrapers, scrapers_browser, crawler, main; print('imports OK')"
+
+      - name: Tests unitaires (parser prix, matching, sécurité)
+        run: pytest -q
 
       - name: Smoke test intelligent par catégorie
         run: |
           python - <<'EOF'
-          import asyncio, sys
-          from scrapers import SCRAPERS
+          import asyncio
           import httpx
+          from scrapers import SCRAPERS, SHOP_CATEGORY
 
-          PARAPHARMACIES = {"paraexpert", "maparatunisie", "mycare", "phyto", "santeparapharmacie", "paraforce", "parashop"}
-          CLOUDFLARE_DATACENTER_BLOCKED = {"megapc"}  # Bloqué sur IP GitHub Actions (géré par Playwright)
+          # Les ensembles sont DÉRIVÉS du registre (plus de listes
+          # fantômes désynchronisées - audit F-08) :
+          PARAPHARMACIES = {k for k, v in SHOP_CATEGORY.items()
+                            if v == "parapharmacie"}
 
           async def main():
               failed = {}
               async with httpx.AsyncClient(timeout=12.0) as client:
                   for name, fn in SCRAPERS.items():
-                      # 1. Ignorer les sites avec Cloudflare strict en CI datacenter
-                      if name in CLOUDFLARE_DATACENTER_BLOCKED:
-                          print(f"{name:15} ⏭️ SKIP (Cloudflare bloque les IP Datacenter)")
-                          continue
-
-                      # 2. Mot-clé adapté à la catégorie du magasin
                       query = "gel" if name in PARAPHARMACIES else "ventilateur"
-
                       try:
                           offers = await fn(query, client)
-                          status = "✅ OK" if offers else "⚠️ VIDE (0 résultat)"
-                          print(f"{name:15} {status} ({len(offers)} offres pour '{query}')")
-                          
+                          status = "OK" if offers else "VIDE (0 resultat)"
+                          print(f"{name:15} {status} ({len(offers)} offres)")
                           if not offers:
-                              # Deuxième tentative avec un mot générique de secours
-                              fallback_q = "creme" if name in PARAPHARMACIES else "souris"
-                              offers_retry = await fn(fallback_q, client)
-                              if offers_retry:
-                                  print(f"{name:15} ✅ OK au 2e essai ({len(offers_retry)} offres pour '{fallback_q}')")
+                              fallback_q = ("creme" if name in PARAPHARMACIES
+                                            else "souris")
+                              retry = await fn(fallback_q, client)
+                              if retry:
+                                  print(f"{name:15} OK au 2e essai "
+                                        f"({len(retry)} offres)")
                               else:
-                                  failed[name] = "0 résultat"
+                                  failed[name] = "0 resultat"
                       except Exception as e:
-                          print(f"{name:15} ❌ ERREUR: {e}")
-                          # Si c'est un timeout ou 403 sur datacenter, on avertit sans bloquer
-                          if "403" in str(e) or "Timeout" in str(e):
-                              print(f"{name:15} ⚠️ Avertissement réseau Datacenter (non bloquant)")
-                          else:
-                              failed[name] = str(e)
+                          print(f"{name:15} ERREUR: {e}")
+                          failed[name] = str(e)
 
               if failed:
-                  print(f"\n::warning::{len(failed)} scraper(s) à surveiller : {', '.join(failed)}")
+                  print(f"\n::warning::{len(failed)} scraper(s) a surveiller "
+                        f": {', '.join(failed)}")
               else:
-                  print("\n🎉 Tous les scrapers HTTP ont réussi le test !")
+                  print("\nTous les scrapers HTTP ont reussi le test !")
 
           asyncio.run(main())
           EOF

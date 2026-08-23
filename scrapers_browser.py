@@ -33,8 +33,10 @@ import asyncio
 import os
 import random
 import sys
+from urllib.parse import urljoin
 
-from scrapers import ProductOffer, parse_tnd_price, match_score, ScraperError
+from scrapers import (ProductOffer, parse_tnd_price, is_strict_match,
+                      ScraperError)
 
 HEADLESS = os.getenv("HEADLESS", "1") == "1"   # HEADLESS=0 + xvfb-run = plus fiable
 
@@ -147,11 +149,20 @@ CHALLENGE_TITLES = ("un instant", "just a moment", "attention required")
 
 
 async def _new_context(pw):
-    browser = await pw.chromium.launch(
+    # PROXY_URL : proxy residentiel tunisien - LA solution pour les sites
+    # Cloudflare (sangour, wamia, tdiscount, scoop, graiet, maalej,
+    # affariyet) qui defient TOUTES les requetes, meme /wp-json et les
+    # sitemaps (verifie en aout 2026). Depuis une IP resid TN, le
+    # challenge se resout tout seul.
+    proxy_url = os.getenv("PROXY_URL")
+    launch_kwargs = dict(
         headless=HEADLESS,
         args=["--disable-blink-features=AutomationControlled", "--no-sandbox",
               "--disable-dev-shm-usage", "--disable-infobars"],
     )
+    if proxy_url:
+        launch_kwargs["proxy"] = {"server": proxy_url}
+    browser = await pw.chromium.launch(**launch_kwargs)
     context = await browser.new_context(
         user_agent=random.choice(USER_AGENTS),
         locale="fr-TN",
@@ -196,16 +207,22 @@ async def _scrape_site(context, key: str, cfg: dict, query: str) -> list[Product
 
             offers = []
             for it in data["items"]:
+                valid, score = is_strict_match(query, it["title"], it["url"])
+                price_val = parse_tnd_price(it["price_raw"])
                 offers.append(ProductOffer(
                     source=label,
                     title=it["title"],
-                    price=parse_tnd_price(it["price_raw"]),
+                    price=price_val,
                     price_raw=it["price_raw"],
-                    url=it["url"] if it["url"].startswith("http") else url.rsplit("/", 1)[0] + "/" + it["url"].lstrip("/"),
+                    url=urljoin(url, it["url"]),
                     image=it.get("image"),
                     availability="Rupture" if it.get("oos") else "En stock",
+                    match_score=score if valid else 0.0,
                 ))
-            return offers
+            # garde-fou : si le filtre strict a tout elimine, on renvoie
+            # les resultats bruts plutot que rien (classe par prix)
+            strict = [o for o in offers if o.match_score > 0]
+            return strict if strict else offers
 
         raise ScraperError(f"{label} : aucune URL de recherche n'a retourné de produits "
                            f"(structure du site changée ?)")
@@ -245,11 +262,9 @@ async def scrape_browser_sites(query: str, sites: list[str] | None = None) -> tu
 
 
 # Rétro-compatibilité : l'ancienne entrée Mytek reste importable
-async def scrape_mytek(query: str) -> list[ProductOffer]:
-    offers, errors = await scrape_browser_sites(query, sites=["mytek"])
-    if errors:
-        raise ScraperError(next(iter(errors.values())))
-    return offers
+# (supprimée - audit F-02 : ce shim levait un KeyError car SITES n'a
+#  plus de clé "mytek". Mytek est scrapé via son API GraphQL publique
+#  dans scrapers.py : scrape_mytek)
 
 
 if __name__ == "__main__":
@@ -257,8 +272,8 @@ if __name__ == "__main__":
     q = sys.argv[1] if len(sys.argv) > 1 else "ventilateur"
     only = [sys.argv[2]] if len(sys.argv) > 2 else None
     offers, errors = asyncio.run(scrape_browser_sites(q, sites=only))
-    for o in offers:
-        o.match_score = round(match_score(q, o.title), 1)
+    # le score strict est deja calcule dans _scrape_site (import F-01 fixe) ;
+    # on ne fait que reafficher ici
     print(json.dumps({
         "count": len(offers),
         "offers": [o.to_dict() for o in offers],

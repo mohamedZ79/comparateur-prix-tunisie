@@ -1,69 +1,84 @@
 # PrixTN — Comparateur de prix tunisien 🇹🇳
 
-Méta-moteur de recherche de prix en temps réel pour le marché tunisien
-(inspiré de primini.tn). L'utilisateur saisit un produit, le backend interroge
-simultanément les boutiques en ligne et renvoie les offres triées par prix.
+Méta-moteur de comparaison de prix pour le marché tunisien. Un **crawler
+nocturne** collecte le catalogue des boutiques dans **PostgreSQL (Supabase)**,
+et une **API FastAPI** sert les offres triées et scorées — avec tolérance
+aux fautes de frappe (`pg_trgm`) et prix vérifiés chaque nuit.
 
-## Boutiques couvertes
+## Architecture (v3)
 
-### httpx — fonctionnent de partout (12 boutiques)
+```
+index.html (front autonome)
+   │  GET /api/search?q=...            (chemin relatif ; proxy Netlify)
+   ▼
+FastAPI (main.py) ──► PostgreSQL / Supabase
+   │   • recherche trigram (tolérance aux fautes)          ◄── schema.sql
+   │   • score de pertinence réel (word_similarity)
+   │   • pagination, /api/suggest, /api/stats, /health réel
+   ▲
+   │  upserts transactionnels, chaque nuit à 03h00 (GitHub Actions)
+   │
+crawler.py ──► SpaceNet, Tunisianet, Yeswikam, MyCare (rayons PrestaShop)
+   │           Sangour (rayons WooCommerce — IP tunisienne requise)
+   │           Mytek (API GraphQL publique)
+   │           Drest (API Store WooCommerce — 27 000+ produits en JSON) ⭐
+   └─► scrapers.py : logique partagée (parser prix, matching strict)
+```
 
-| Boutique | Secteur | Plateforme | Statut |
+## Couverture des boutiques
+
+### Sources du catalogue nocturne
+
+| Boutique | Secteur | Accès | Statut |
 |---|---|---|---|
-| **Mytek** | High-tech | **API GraphQL** (OpenSearch) | ✅ testé — voir note ci-dessous |
-| Tunisianet | High-tech | PrestaShop | ✅ testé |
-| Spacenet | High-tech | PrestaShop | ✅ testé |
-| TunisiaTech | High-tech / Électroménager | PrestaShop | ✅ testé |
-| Wiki.tn | High-tech / Électroménager | WooCommerce/Bricks | ✅ testé |
-| Darty Tunisie | Électroménager | PrestaShop | ✅ testé |
-| Technopro | High-tech | PrestaShop | ✅ testé |
-| SBS Informatique | Gaming / PC | PrestaShop | ✅ testé |
-| MegaPC | Gaming / PC | Next.js (SSR) | ✅ testé |
-| ParaExpert | Parapharmacie | WooCommerce | ✅ testé |
-| MaParaTunisie | Parapharmacie | WooCommerce/Flatsome | ✅ testé |
-| MyCare | Parapharmacie | PrestaShop | ✅ testé |
+| **Drest** | Parapharmacie & Beauté | **API Store WooCommerce** (JSON public) | ✅ testé — 27 000+ produits |
+| Mytek | High-tech | API GraphQL publique | ✅ testé |
+| Tunisianet | High-tech / Électro | Rayons PrestaShop | ✅ testé |
+| SpaceNet | High-tech / Électro | Rayons PrestaShop | ✅ testé |
+| Yeswikam | Parapharmacie | Rayons PrestaShop | ✅ testé |
+| MyCare | Parapharmacie | Rayons PrestaShop | ✅ testé |
+| Sangour | Maison / Entretien | Rayons WooCommerce | ⚠️ IP tunisienne requise (voir plus bas) |
 
-> **💡 Mytek sans navigateur.** Les pages HTML de Mytek sont protégées par
-> Cloudflare, mais son **API GraphQL publique** (`/graphql`, moteur
-> OpenSearch) ne l'est pas : le scraper l'interroge directement en httpx
-> (technique validée par [mytek-radar](https://github.com/mohamedZ79/mytek-radar)).
-> Résultat : Mytek fonctionne de partout, sans Playwright ni IP tunisienne.
+### Scrapers httpx (recherche live / CLI)
 
-### Playwright — IP tunisienne requise (10 boutiques)
+Tunisianet, SpaceNet, Mytek (GraphQL), Darty, Technopro, SBS, Yeswikam,
+MyCare, **Drest (nouveau)** — testés par la CI toutes les 6 heures.
 
-| Boutique | Secteur | Statut |
-|---|---|---|
-| Sangour | Maison / Entretien | 🧪 prêt — sélecteurs **validés** (WooCommerce + Woodmart, d'après [Sangoor-radar](https://github.com/mohamedZ79/Sangoor-radar)) |
-| Wamia | Marketplace | 🧪 prêt — Cloudflare Turnstile |
-| T-Discount | High-tech / Électro | 🧪 prêt — Cloudflare (403 en httpx) |
-| Scoop | High-tech | 🧪 prêt — Cloudflare (403 en httpx) |
-| Graiet | Électroménager | 🧪 prêt — Cloudflare (403 en httpx) |
-| Maalej Audio | Électroménager | 🧪 prêt — Cloudflare (403 en httpx) |
-| Affariyet | High-tech / Maison | 🧪 prêt — Cloudflare (403 en httpx) |
-| Drest | Beauté / Électro | 🧪 prêt — résultats rendus en JS |
-| Bricorama | Bricolage | ⏳ injoignable depuis l'étranger — à tester depuis la Tunisie |
-| Electro Tounes | Électroménager | ⏳ injoignable depuis l'étranger — à tester depuis la Tunisie |
+### Sites protégés par Cloudflare — la solution
 
-> **⚠️ La règle d'or Cloudflare.** Les 10 sites Playwright sont derrière un
-> challenge **Cloudflare Turnstile** qui ne se résout **pas depuis une IP de
-> datacenter** (Render, Railway, GitHub Actions...). Depuis une **IP
-> résidentielle tunisienne**, le challenge se résout tout seul en quelques
-> secondes avec le vrai Chromium embarqué. Conséquence : hébergez le backend
-> en Tunisie (VPS/local) ou passez par un proxy résidentiel pour ces sources.
-> Les 12 scrapers httpx, eux, fonctionnent de partout.
+Diagnostic vérifié en août 2026 depuis une IP datacenter : **sangour.tn,
+wamia.tn, tdiscount.tn, scoop.com.tn, graiet.tn, maalejaudio.tn,
+affariyet.com** répondent **403 (challenge Cloudflare) sur TOUTES les
+URL** — pages HTML, `/wp-json`, sitemaps, flux RSS. **bricorama.tn** et
+**electrotounes.tn** refusent carrément la connexion (geo-blocage).
+Ni httpx, ni curl_cffi (empreinte TLS Chrome), ni Playwright ne passent
+depuis une IP datacenter.
 
-### Sites écartés (diagnostic août 2026)
+**La solution est l'IP, pas le code** — et le code est prêt :
 
-- **Batam** : domaine mort (en vente)
-- **Fi-Dar, Phyto.tn, Santé Parapharmacie, Paraforce** : domaines inexistants (NXDOMAIN)
-- **PhytoShop.tn** : prix absents du HTML (chargés en JS) — à ajouter plus tard en Playwright
-- **Best Buy Tunisie** : application JS sans recherche server-side
-- **Jumia** : exclu volontairement
+1. **`PROXY_URL`** (nouveau) : définissez un proxy résidentiel tunisien
+   dans `.env` ou le secret CI du même nom. Le crawler (httpx + repli
+   curl_cffi) et les scrapers Playwright l'utilisent automatiquement :
+   ```bash
+   PROXY_URL=http://user:pass@tn-proxy:8080 python crawler.py
+   ```
+2. **VPS tunisien ou machine locale** : lancez le nightly crawler depuis
+   une IP tunisienne (cron local ou GitHub Actions + secret `PROXY_URL`).
+3. **Playwright** (dépannage ponctuel) : `scrapers_browser.py` est réparé
+   (l'import cassé `match_score` — audit F-01 — et le shim Mytek — F-02)
+   et respecte lui aussi `PROXY_URL`.
+
+> ⭐ **Drest** était dans la liste bloquée : l'audit a découvert que son
+> API Store WooCommerce (`/wp-json/wc/store/products`) répond en **JSON
+> sans aucun challenge** — 27 000 produits accessibles depuis n'importe
+> quelle IP avec un simple User-Agent navigateur.
 
 ## Lancement local
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env            # renseignez DATABASE_URL
+psql $DATABASE_URL -f schema.sql   # ou éditeur SQL Supabase
 uvicorn main:app --reload --port 8000
 # → http://localhost:8000
 ```
@@ -71,63 +86,55 @@ uvicorn main:app --reload --port 8000
 Test CLI des scrapers seuls :
 
 ```bash
-python scrapers.py "ventilateur orient"          # les 12 boutiques httpx (dont Mytek)
-python scrapers_browser.py "samsung s23"         # les 10 boutiques Playwright
-python scrapers_browser.py "samsung s23" sangour # une seule boutique navigateur
+python scrapers.py "ventilateur orient"       # 9 boutiques httpx (dont Drest)
+python scrapers_browser.py "samsung s23"      # boutiques Cloudflare (IP TN)
+python crawler.py                              # ingestion nocturne complète
+pytest -q                                      # tests unitaires
 ```
 
-### Activer les scrapers navigateur (Sangour, Wamia…)
+## API
 
-```bash
-pip install playwright
-playwright install chromium          # build complet (le "headless shell" est détecté)
-playwright install-deps chromium     # libs système (Linux)
+| Endpoint | Description |
+|---|---|
+| `GET /api/search?q=…&limit=40&offset=0` | Recherche paginée, tri pertinence puis prix, tolérance aux fautes |
+| `GET /api/suggest?q=…` | Autocomplétion (8 suggestions) |
+| `GET /api/stats` | Fraîcheur du catalogue par boutique (alerte données périmées) |
+| `GET /health` | Santé réelle (vérifie la base, 503 si dégradé) |
 
-# Depuis une IP tunisienne :
-ENABLE_BROWSER_SCRAPERS=1 uvicorn main:app --port 8000
+Réponse `search` : chaque offre inclut `price`, `match_score` **réel**
+(0-100), `updated_at` et `price_age_hours` (âge du prix). Plus de score
+bidon à 100 ni de flag `cached` fictif (audit F-04/F-05).
 
-# Sur un serveur sans écran, le mode fenêtré sous X virtuel passe mieux le challenge :
-HEADLESS=0 ENABLE_BROWSER_SCRAPERS=1 xvfb-run -a uvicorn main:app --port 8000
-```
+Sans `pg_trgm`, l'API retombe automatiquement sur la recherche par tokens
+avec scoring Python (rapidfuzz) — comportement historique, mais sécurisé
+(wildcards LIKE échappés — F-06).
 
-Les scrapers navigateur partagent **un seul Chromium** (un onglet par boutique,
-en parallèle), masquent les empreintes d'automatisation (`navigator.webdriver`,
-plugins, locale fr-TN, fuseau Africa/Tunis) et détectent automatiquement la
-plateforme de chaque site (sélecteurs PrestaShop / WooCommerce / Woodmart /
-Magento / OpenCart essayés dans l'ordre — le markup des boutiques non
-vérifiables depuis l'étranger sera confirmé au premier run tunisien).
+## Base de données
 
-## Architecture
-
-```
-index.html (front) ──▶ FastAPI /api/search?q=...
-                           ├─ cache mémoire 15 min (→ Redis en prod)
-                           └─ asyncio.gather ─▶ scrapers.py (12 boutiques httpx en parallèle,
-                              │                    timeout 30 s/boutique, erreurs isolées)
-                              └─ scrapers_browser.py (10 boutiques Cloudflare, 1 Chromium,
-                                                      activé via ENABLE_BROWSER_SCRAPERS=1)
-```
-
-- **Parsing prix TND** : `9,900 DT` → `9.9`, `1 299,000 TND` → `1299.0`, `131.370` → `131.37`
-- **Fuzzy matching** : rapidfuzz (`token_set_ratio` + `partial_ratio`, seuil 45/100)
-  **+ couverture des tokens** : au moins 50 % des mots de la requête doivent
-  apparaître dans le titre (évite les faux positifs type « stylo gel » pour
-  « cerave gel moussant »)
-- **Résilience** : distinction « 0 résultat » vs « structure HTML cassée » (ScraperError)
-- **CI** : GitHub Actions teste tous les scrapers toutes les 6 h
-
-## Ajouter une boutique
-
-1. Identifier la plateforme (PrestaShop → `/recherche?controller=search&s=`,
-   WooCommerce → `/?s=&post_type=product`).
-2. Écrire `async def scrape_x(query, client) -> list[ProductOffer]` dans `scrapers.py`
-   (copier un scraper existant et adapter 4 sélecteurs CSS).
-3. L'enregistrer dans le dict `SCRAPERS`. C'est tout — l'API, le cache,
-   le tri et la CI l'incluent automatiquement.
+`schema.sql` versionne le contrat complet : table `products` (clé unique
+`source, url`), index trigram, table `price_history` + trigger (chaque
+changement de prix est historisé automatiquement), et la migration
+`MyTek → Mytek`. Toutes les instructions sont idempotentes.
 
 ## Déploiement
 
-- **Backend** : Render / Railway / VPS (build : `pip install -r requirements.txt`,
-  start : `uvicorn main:app --host 0.0.0.0 --port $PORT`)
-- **Frontend** : `index.html` est servi par l'API ; pour Netlify, changer
-  `API_URL` dans `index.html` vers l'URL publique de l'API.
+- **Backend** : Render / Railway / VPS / Docker
+  (`docker build -t prixtn . && docker run -p 8000:8000 prixtn`)
+- **Frontend** : servi par l'API ; sur Netlify, `netlify.toml` proxifie
+  déjà `/api/*` vers Render (le front appelle `/api/search` en relatif).
+- **Secrets CI** : `DATABASE_URL` (crawler nocturne), `PROXY_URL`
+  (optionnel — proxy résidentiel tunisien).
+
+## Tests & CI
+
+- `pytest -q` : parser de prix TND (15 formats réels), matching strict,
+  échappement des wildcards, cohérence du registre boutiques.
+- **Scraper Health Check** (toutes les 6 h) : import smoke test de tous
+  les modules + tests unitaires + smoke test par catégorie avec ensembles
+  **dérivés du registre** (plus de boutiques fantômes — audit F-08).
+- **Daily Catalog Crawler** (03h00) : échoue explicitement si zéro produit
+  collecté → email d'alerte GitHub (plus de silence — audit F-11).
+
+## Licence
+
+MIT — voir [LICENSE](LICENSE).
