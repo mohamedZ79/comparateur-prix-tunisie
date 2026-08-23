@@ -316,23 +316,39 @@ import html as _html  # noqa: E402
 
 DREST_STORE_API = "https://drest.tn/wp-json/wc/store/products"
 
-async def scrape_drest(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+async def _drest_fetch(query: str, client: httpx.AsyncClient) -> list:
+    """Interroge l'API Store Drest : httpx, puis repli curl_cffi (TLS
+    Chrome) - certains CDN filtrent httpx selon l'IP/geolocalisation
+    (observe depuis les runners GitHub US, aout 2026)."""
     clean_q = re.sub(r'["\']', '', query).strip()
+    params = {"search": clean_q, "per_page": 24}
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "fr-TN,fr;q=0.9,en;q=0.8",
+    }
+    # tentative 1 : httpx (le client passe peut-etre par un proxy residentiel)
     try:
-        resp = await client.get(
-            DREST_STORE_API,
-            params={"search": clean_q, "per_page": 24},
-            headers={
-                "User-Agent": random.choice(USER_AGENTS),
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "fr-TN,fr;q=0.9,en;q=0.8",
-            },
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        items = resp.json()
+        resp = await client.get(DREST_STORE_API, params=params,
+                                headers=headers, timeout=12.0)
+        if resp.status_code == 200:
+            return resp.json()
     except Exception:
-        return []
+        pass
+    # tentative 2 : curl_cffi avec empreinte TLS Chrome
+    try:
+        from curl_cffi.requests import AsyncSession
+        async with AsyncSession(impersonate="chrome", timeout=15) as s:
+            r2 = await s.get(DREST_STORE_API, params=params,
+                             headers=headers, allow_redirects=True)
+            if r2.status_code == 200:
+                return r2.json()
+    except Exception:
+        pass
+    return []
+
+async def scrape_drest(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    items = await _drest_fetch(query, client)
 
     offers = []
     for it in items:
