@@ -407,6 +407,105 @@ async def crawl_mytek(fetcher: Fetcher, sem: asyncio.Semaphore) -> list:
         products.extend(r)
     return products
 
+# ------------------------------------------------------------------ Wamia
+
+# Decouverte de l'audit aout 2026 : l'API GraphQL Magento de wamia.tn
+# (/graphql) echappe au challenge Cloudflare qui protege le HTML. On ingere
+# le catalogue (~23 000 produits sur 15 categories) en parcourant les
+# categories puis la pagination de chaque rayon.
+WAMIA_GRAPHQL = "https://www.wamia.tn/graphql"
+WAMIA_BASE = "https://www.wamia.tn/"
+
+WAMIA_CATEGORIES_QUERY = """
+query {
+  categories(filters: {parent_id: {eq: "2"}}) {
+    items { id name product_count }
+  }
+}
+"""
+
+WAMIA_CATEGORY_PRODUCTS_QUERY = """
+query ($filter: ProductAttributeFilterInput, $pageSize: Int!, $page: Int!) {
+  products(filter: $filter, pageSize: $pageSize, currentPage: $page) {
+    total_count
+    items {
+      name
+      sku
+      canonical_url
+      stock_status
+      small_image { url }
+      price_range { minimum_price { regular_price { value currency } } }
+    }
+  }
+}
+"""
+
+async def _wamia_gql(fetcher: Fetcher, query: str, variables: dict):
+    body = await fetcher.post_json(
+        WAMIA_GRAPHQL, {"query": query, "variables": variables})
+    if not body:
+        return None
+    return (body.get("data") or {})
+
+async def crawl_wamia(fetcher: Fetcher, max_pages_per_cat: int = 50) -> list:
+    """Catalogue Wamia via GraphQL : categories puis pagination."""
+    data = await _wamia_gql(fetcher, WAMIA_CATEGORIES_QUERY, {})
+    cats = ((data or {}).get("categories") or {}).get("items") or []
+    if not cats:
+        log.warning("[Wamia] categories inaccessibles - API GraphQL "
+                    "indisponible ?")
+        return []
+
+    products = []
+    for cat in cats:
+        cat_id, cat_name = str(cat.get("id")), cat.get("name") or "Wamia"
+        page, got = 1, 0
+        while page <= max_pages_per_cat:
+            data = await _wamia_gql(
+                fetcher, WAMIA_CATEGORY_PRODUCTS_QUERY,
+                {"filter": {"category_id": {"eq": cat_id}},
+                 "pageSize": 100, "page": page})
+            items = ((data or {}).get("products") or {}).get("items") or []
+            if not items:
+                break
+            for it in items:
+                title = html_lib.unescape((it.get("name") or "")).strip()
+                canonical = (it.get("canonical_url") or "").strip()
+                price_obj = (((it.get("price_range") or {})
+                              .get("minimum_price") or {})
+                             .get("regular_price") or {})
+                price = price_obj.get("value")
+                if not title or not canonical or price is None:
+                    continue
+                try:
+                    price_val = round(float(price), 3)
+                except (TypeError, ValueError):
+                    continue
+                if price_val <= 0:
+                    continue
+                img = ((it.get("small_image") or {}).get("url") or
+                       "").strip() or None
+                products.append({
+                    "source": "Wamia",
+                    "category": f"Marketplace - {cat_name}",
+                    "title": title,
+                    "sku": it.get("sku") or None,
+                    "price": price_val,
+                    "price_raw": f"{price_val:,.3f} TND",
+                    "url": WAMIA_BASE + canonical.lstrip("/"),
+                    "image": img,
+                    "in_stock": it.get("stock_status") == "IN_STOCK",
+                })
+                got += 1
+            if len(items) < 100:
+                break
+            page += 1
+            await asyncio.sleep(0.2)
+        log.info("[Wamia] %-28s : %d produits", cat_name, got)
+        await asyncio.sleep(0.3)
+    log.info("[Wamia] total : %d produits", len(products))
+    return products
+
 # ------------------------------------------------------------------ Drest
 
 async def crawl_drest(fetcher: Fetcher) -> list:
@@ -539,7 +638,11 @@ async def main():
         sem = asyncio.Semaphore(4)
         all_products.extend(await crawl_mytek(fetcher, sem))
 
-        # 4. Drest via API Store (nouveau, decouverte audit 2026)
+        # 4. Wamia via GraphQL Magento (nouveau, decouverte audit 2026 :
+        #    l'API echappe au challenge Cloudflare, ~23 000 produits)
+        all_products.extend(await crawl_wamia(fetcher))
+
+        # 5. Drest via API Store (nouveau, decouverte audit 2026)
         all_products.extend(await crawl_drest(fetcher))
     finally:
         await fetcher.close()

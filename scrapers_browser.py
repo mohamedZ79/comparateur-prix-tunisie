@@ -66,13 +66,17 @@ SITES = {
             "https://sangour.tn/recherche?controller=search&s={q}",
         ],
     },
-    "wamia":        {"label": "Wamia",          "search_urls": _candidates("https://www.wamia.tn")},
+    # NOTE : Wamia n'est plus ici — son API GraphQL Magento (/graphql)
+    # échappe au challenge Cloudflare : scrapé en httpx via scrape_wamia
+    # dans scrapers.py (découverte de l'audit août 2026).
     "tdiscount":    {"label": "T-Discount",     "search_urls": _candidates("https://tdiscount.tn")},
     "scoop":        {"label": "Scoop",          "search_urls": _candidates("https://www.scoop.com.tn")},
     "graiet":       {"label": "Graiet",         "search_urls": _candidates("https://graiet.tn")},
     "maalej":       {"label": "Maalej Audio",   "search_urls": _candidates("https://maalejaudio.tn")},
     "affariyet":    {"label": "Affariyet",      "search_urls": _candidates("https://affariyet.com")},
-    "drest":        {"label": "Drest",          "search_urls": _candidates("https://drest.tn")},
+    # NOTE : Drest n'est plus ici — son API Store WooCommerce
+    # (/wp-json/wc/store/products) répond en JSON public : scrapé en httpx
+    # via scrape_drest dans scrapers.py (découverte de l'audit août 2026).
     # Injoignables depuis une IP étrangère (geo-blocage probable) — à tester depuis la Tunisie
     "bricorama":    {"label": "Bricorama",      "search_urls": _candidates("https://bricorama.tn")},
     "electrotounes": {"label": "Electro Tounes", "search_urls": _candidates("https://electrotounes.tn")},

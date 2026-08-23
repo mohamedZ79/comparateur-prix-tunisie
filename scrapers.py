@@ -378,6 +378,79 @@ query ($search: String, $page: Int, $pageSize: Int) {
 }
 """
 
+# --- WAMIA GRAPHQL (Magento) ---
+# Decouverte de l'audit aout 2026 : wamia.tn (marketplace) est derriere
+# Cloudflare pour le HTML, mais son API GraphQL Magento sur /graphql repond
+# SANS challenge depuis n'importe quelle IP. Recherche live + prix + stock.
+# Schema verifie : minimum_price.regular_price (Money), canonical_url,
+# stock_status, small_image.url.
+WAMIA_GRAPHQL = "https://www.wamia.tn/graphql"
+WAMIA_BASE = "https://www.wamia.tn/"
+WAMIA_SEARCH_QUERY = """
+query ($search: String!) {
+  products(search: $search, pageSize: 40) {
+    total_count
+    items {
+      name
+      sku
+      canonical_url
+      stock_status
+      small_image { url }
+      price_range { minimum_price { regular_price { value currency } } }
+    }
+  }
+}
+"""
+
+async def scrape_wamia(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    clean_q = re.sub(r'["\']', '', query).strip()
+    try:
+        resp = await client.post(
+            WAMIA_GRAPHQL,
+            json={"query": WAMIA_SEARCH_QUERY,
+                  "variables": {"search": clean_q}},
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json",
+                     "User-Agent": random.choice(USER_AGENTS)},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception:
+        return []
+
+    items = ((body.get("data") or {}).get("products") or {}).get("items") or []
+    offers = []
+    for it in items:
+        title = _html.unescape((it.get("name") or "")).strip()
+        canonical = (it.get("canonical_url") or "").strip()
+        price_obj = (((it.get("price_range") or {})
+                      .get("minimum_price") or {})
+                     .get("regular_price") or {})
+        price = price_obj.get("value")
+        if not title or not canonical or price is None or float(price) <= 0:
+            continue
+
+        url = WAMIA_BASE + canonical.lstrip("/")
+        valid, score = is_strict_match(query, title, url)
+        if not valid:
+            continue
+
+        img = ((it.get("small_image") or {}).get("url") or "").strip() or None
+        offers.append(ProductOffer(
+            source="Wamia",
+            title=title,
+            price=round(float(price), 3),
+            price_raw=f"{float(price):,.3f} TND",
+            url=url,
+            image=img,
+            availability=("En stock"
+                          if it.get("stock_status") == "IN_STOCK"
+                          else "Rupture"),
+            match_score=score,
+        ))
+    return offers
+
 async def scrape_mytek(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
     clean_q = re.sub(r'["\']', '', query).strip()
     resp = await client.post(
@@ -422,6 +495,7 @@ async def scrape_mytek(query: str, client: httpx.AsyncClient) -> list[ProductOff
 SCRAPERS = {
     "spacenet": scrape_spacenet,
     "mytek": scrape_mytek,
+    "wamia": scrape_wamia,
     "tunisianet": scrape_tunisianet,
     "yeswikam": scrape_yeswikam,
     "darty": scrape_darty,
@@ -437,6 +511,7 @@ SCRAPERS = {
 SHOP_CATEGORY = {
     "spacenet": "electronics",
     "mytek": "electronics",
+    "wamia": "marketplace",
     "tunisianet": "electronics",
     "darty": "electronics",
     "technopro": "electronics",

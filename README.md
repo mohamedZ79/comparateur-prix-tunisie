@@ -32,6 +32,7 @@ crawler.py ──► SpaceNet, Tunisianet, Yeswikam, MyCare (rayons PrestaShop)
 | Boutique | Secteur | Accès | Statut |
 |---|---|---|---|
 | **Drest** | Parapharmacie & Beauté | **API Store WooCommerce** (JSON public) | ✅ testé — 27 000+ produits |
+| **Wamia** | Marketplace (15 rayons) | **API GraphQL Magento** (publique) | ✅ testé — ~23 000 produits |
 | Mytek | High-tech | API GraphQL publique | ✅ testé |
 | Tunisianet | High-tech / Électro | Rayons PrestaShop | ✅ testé |
 | SpaceNet | High-tech / Électro | Rayons PrestaShop | ✅ testé |
@@ -41,18 +42,25 @@ crawler.py ──► SpaceNet, Tunisianet, Yeswikam, MyCare (rayons PrestaShop)
 
 ### Scrapers httpx (recherche live / CLI)
 
-Tunisianet, SpaceNet, Mytek (GraphQL), Darty, Technopro, SBS, Yeswikam,
-MyCare, **Drest (nouveau)** — testés par la CI toutes les 6 heures.
+Tunisianet, SpaceNet, Mytek (GraphQL), **Wamia (GraphQL)**, Darty,
+Technopro, SBS, Yeswikam, MyCare, **Drest (Store API)** — testés par la
+CI toutes les 6 heures.
 
 ### Sites protégés par Cloudflare — la solution
 
-Diagnostic vérifié en août 2026 depuis une IP datacenter : **sangour.tn,
-wamia.tn, tdiscount.tn, scoop.com.tn, graiet.tn, maalejaudio.tn,
-affariyet.com** répondent **403 (challenge Cloudflare) sur TOUTES les
-URL** — pages HTML, `/wp-json`, sitemaps, flux RSS. **bricorama.tn** et
-**electrotounes.tn** refusent carrément la connexion (geo-blocage).
-Ni httpx, ni curl_cffi (empreinte TLS Chrome), ni Playwright ne passent
-depuis une IP datacenter.
+Diagnostic vérifié en août 2026 depuis une IP datacenter, en testant
+**toutes** les voies d'accès : httpx, curl_cffi (empreintes TLS Chrome /
+Safari / Edge / Firefox), API JSON (`/wp-json`, `/graphql`, `/rest`),
+sitemaps, flux RSS, services externes (Jina, CORS proxies), et même un
+vrai Chromium avec 60 s de patience + clic sur le widget Turnstile.
+
+**Verdict : le challenge est décidé par l'IP, pas par le code.** Les sites
+restants — **sangour.tn, tdiscount.tn, scoop.com.tn, graiet.tn,
+maalejaudio.tn, affariyet.com** (+ geo-bloqués **bricorama.tn** et
+**electrotounes.tn**) — laissent TOUT en 403 depuis une IP datacenter.
+Mais **deux des sites "impossibles" ont été débloqués par leur API
+interne** (voir plus bas) — le même axe de recherche reste ouvert pour
+les autres.
 
 **La solution est l'IP, pas le code** — et le code est prêt :
 
@@ -68,10 +76,16 @@ depuis une IP datacenter.
    (l'import cassé `match_score` — audit F-01 — et le shim Mytek — F-02)
    et respecte lui aussi `PROXY_URL`.
 
-> ⭐ **Drest** était dans la liste bloquée : l'audit a découvert que son
-> API Store WooCommerce (`/wp-json/wc/store/products`) répond en **JSON
-> sans aucun challenge** — 27 000 produits accessibles depuis n'importe
-> quelle IP avec un simple User-Agent navigateur.
+> ⭐ **Drest débloqué** : son API Store WooCommerce (`/wp-json/wc/store/products`)
+> répond en **JSON sans aucun challenge** — 27 000 produits accessibles depuis
+> n'importe quelle IP avec un simple User-Agent navigateur.
+>
+> ⭐ **Wamia débloqué** : son API GraphQL Magento (`/graphql`) échappe
+> complètement au challenge Cloudflare qui protège le HTML — recherche live,
+> prix, stock et images, ~23 000 produits sur 15 catégories, depuis
+> n'importe quelle IP. Deux sites « impossibles » sur huit : les APIs
+> internes (Magento GraphQL, WooCommerce Store) sont l'axe d'attaque
+> privilégié pour les boutiques restantes.
 
 ## Lancement local
 

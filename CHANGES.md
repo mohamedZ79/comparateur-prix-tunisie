@@ -4,6 +4,42 @@ Implémentation complète des recommandations du rapport d'audit
 (27 constats), chaque correctif étant **vérifié par des tests réels**
 avant livraison.
 
+## ⭐ Deuxième vague de recherche : WAMIA DÉBLOQUÉ (vague 2)
+
+Requête utilisateur : *« trouve une solution pour les sites refusant le
+crawl (sangour, wamia, drest...) »*. Seconde campagne de tests, plus
+aggressive que la première :
+
+| Tentative | Résultat |
+|---|---|
+| curl_cffi × 5 empreintes TLS (Chrome, Chrome Android, Safari 17, Edge 101, Firefox 133) | 403 partout — le challenge ne regarde pas l'empreinte TLS |
+| Jina Reader (navigateurs distants) | 401 — exige désormais une clé API |
+| Proxies CORS (allorigins, corsproxy.io) | 522 / 403 — pas de contournement |
+| Sous-domaines origine tdiscount (api., m., backend. → OVH) | DNS valables mais tout firewaller : timeout |
+| Endpoints alternatifs sangour (/api, /rest, /graphql, /mobile) | 403 challenge partout |
+| Chromium réel : 60 s de patience + clic sur le widget Turnstile | **Bloqué** — le challenge est non-interactif et décidé par l'IP |
+| **`www.wamia.tn/graphql` (API GraphQL Magento)** | ✅ **200 JSON — OUVERTE** |
+| `www.wamia.tn/rest/V1/products` | 401 — l'API REST existe aussi mais exige un token (GraphQL suffit) |
+
+**Wamia est donc débloqué** (2e site « impossible » après Drest) :
+
+- `scrape_wamia()` dans scrapers.py — recherche **live** via GraphQL
+  (vérifié : 32 offres pour « ventilateur », 32 pour « parfum », filtre
+  strict appliqué, URLs canoniques `.html`, prix TND, stock réel) ;
+- `crawl_wamia()` dans crawler.py — ingestion du catalogue complet par
+  catégories (15 rayons, ~23 000 produits) avec pagination 100/page
+  (vérifié E2E : 797 produits en base sur 4 catégories de test, ruptures
+  détectées) ;
+- Wamia retiré de la liste Playwright (plus besoin de navigateur ni d'IP
+  tunisienne pour ce site) ;
+- inscrit dans `SCRAPERS` + `SHOP_CATEGORY` (catégorie « marketplace ») —
+  la CI le teste automatiquement toutes les 6 h.
+
+**Bilan des sites « refusants »** : 2/9 débloqués par leurs APIs internes
+(Drest Store API, Wamia GraphQL) ; les 7 restants sont définitivement
+verrouillés au niveau IP depuis un datacenter — `PROXY_URL` (fourni) reste
+la solution pour eux.
+
 ## Corrections critiques
 
 | ID | Fichier | Correctif | Vérification |
