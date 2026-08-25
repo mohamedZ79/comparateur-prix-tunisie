@@ -400,4 +400,257 @@ MYTEK_MEDIA = "https://www.mytek.tn/media/catalog/product"
 MYTEK_QUERY = """
 query ($search: String, $page: Int, $pageSize: Int) {
   opensearchProductSearch(search: $search, page: $page, pageSize: $pageSize) {
-    items { id sku name price spe
+    items { id sku name price special_price final_price image url }
+  }
+}
+"""
+
+MYTEK_KEYWORDS = [
+    "samsung", "iphone", "xiaomi", "infinix", "oppo", "honor",
+    "pc portable", "pc gamer", "imprimante", "ecran", "tablette",
+    "tv", "climatiseur", "refrigerateur", "machine a laver", "micro ondes",
+    "moulinex", "tefal", "aspirateur", "cuisiniere", "cafetiere", "robot",
+    "casque", "souris", "clavier", "disque dur", "bureau", "onduleur"
+]
+
+async def crawl_mytek(fetcher: Fetcher, sem: asyncio.Semaphore) -> list:
+    products = []
+    async def crawl_keyword(term: str):
+        page, local = 1, []
+        while page <= 12:
+            payload = {"query": MYTEK_QUERY, "variables": {"search": term, "page": page, "pageSize": 100}}
+            async with sem:
+                body = await fetcher.post_json(MYTEK_GRAPHQL, payload)
+            if not body:
+                break
+            items = ((body.get("data") or {}).get("opensearchProductSearch") or {}).get("items") or []
+            if not items:
+                break
+            for it in items:
+                price = it.get("special_price") or it.get("final_price") or it.get("price")
+                title = (it.get("name") or "").strip()
+                if not title or price is None or float(price) <= 0:
+                    continue
+                img = it.get("image") or ""
+                if img.startswith("/"):
+                    img = MYTEK_MEDIA + img
+                url = it.get("url") or ""
+                if url and not url.startswith("http"):
+                    url = "https://www.mytek.tn/" + url.lstrip("/")
+                local.append({
+                    "source": "Mytek",
+                    "category": "High-Tech",
+                    "title": title,
+                    "sku": it.get("sku"),
+                    "price": round(float(price), 3),
+                    "price_raw": f"{float(price):,.3f} TND",
+                    "url": url,
+                    "image": img or None,
+                    "in_stock": True,
+                })
+            if len(items) < 100:
+                break
+            page += 1
+            await asyncio.sleep(0.1)
+        log.info("[Mytek] mot-clé %-15s : %d produits", term, len(local))
+        return local
+
+    results = await asyncio.gather(*(crawl_keyword(t) for t in MYTEK_KEYWORDS))
+    for r in results:
+        products.extend(r)
+    return products
+
+async def crawl_drest(fetcher: Fetcher) -> list:
+    products, page, seen = [], 1, set()
+    while page <= DREST_MAX_PAGES:
+        body = await fetcher.get_json("https://drest.tn/wp-json/wc/store/products", params={"per_page": 100, "page": page})
+        if not body or not isinstance(body, list):
+            break
+        new_count = 0
+        for it in body:
+            pid = it.get("id")
+            if pid in seen:
+                continue
+            seen.add(pid)
+            title = html_lib.unescape((it.get("name") or "")).strip()
+            prices = it.get("prices") or {}
+            minor = int(prices.get("currency_minor_unit") or 0)
+            raw_price = prices.get("price") or prices.get("regular_price")
+            if not title or raw_price is None:
+                continue
+            try:
+                price_val = round(int(raw_price) / (10 ** minor), 3)
+            except Exception:
+                continue
+            if price_val <= 0:
+                continue
+            images = it.get("images") or []
+            products.append({
+                "source": "Drest",
+                "category": "Parapharmacie & Beauté",
+                "title": title,
+                "sku": it.get("sku") or None,
+                "price": price_val,
+                "price_raw": f"{price_val:,.3f} TND",
+                "url": it.get("permalink") or "",
+                "image": images[0].get("src") if images else None,
+                "in_stock": bool(it.get("is_in_stock")),
+            })
+            new_count += 1
+        if new_count == 0:
+            break
+        page += 1
+        await asyncio.sleep(0.1)
+    log.info("[Drest] Total collecté : %d produits", len(products))
+    return products
+
+async def crawl_wamia(fetcher: Fetcher) -> list:
+    WAMIA_GQL = "https://www.wamia.tn/graphql"
+    WAMIA_BASE = "https://www.wamia.tn/"
+    products = []
+    try:
+        cat_resp = await fetcher.post_json(WAMIA_GQL, {"query": "{ categories(filters: {parent_id: {eq: \"2\"}}) { items { id name } } }"})
+        cats = ((cat_resp or {}).get("data") or {}).get("categories", {}).get("items", [])
+        for cat in cats:
+            cat_id, cat_name = str(cat.get("id")), cat.get("name") or "Wamia"
+            for page in range(1, 40):
+                query = f"""
+                query {{
+                  products(filter: {{category_id: {{eq: "{cat_id}"}}}}, pageSize: 100, currentPage: {page}) {{
+                    items {{ name sku canonical_url stock_status small_image {{ url }} price_range {{ minimum_price {{ regular_price {{ value }} }} }} }}
+                  }}
+                }}
+                """
+                r = await fetcher.post_json(WAMIA_GQL, {"query": query})
+                items = ((r or {}).get("data") or {}).get("products", {}).get("items", [])
+                if not items:
+                    break
+                for it in items:
+                    title = html_lib.unescape((it.get("name") or "")).strip()
+                    canonical = (it.get("canonical_url") or "").strip()
+                    price = ((it.get("price_range") or {}).get("minimum_price") or {}).get("regular_price", {}).get("value")
+                    if title and canonical and price and float(price) > 0:
+                        img = (it.get("small_image") or {}).get("url")
+                        products.append({
+                            "source": "Wamia",
+                            "category": f"Maison - {cat_name}",
+                            "title": title,
+                            "sku": it.get("sku") or None,
+                            "price": round(float(price), 3),
+                            "price_raw": f"{float(price):,.3f} TND",
+                            "url": WAMIA_BASE + canonical.lstrip("/"),
+                            "image": img,
+                            "in_stock": it.get("stock_status") == "IN_STOCK",
+                        })
+                if len(items) < 100:
+                    break
+                await asyncio.sleep(0.1)
+    except Exception as e:
+        log.warning(f"Erreur Wamia : {e}")
+    log.info("[Wamia] Total collecté : %d produits", len(products))
+    return products
+
+# -----------------------------------------------------------------------------
+# Enregistrement PostgreSQL Sécurisé
+# -----------------------------------------------------------------------------
+UPSERT_QUERY = """
+INSERT INTO products (source, category, title, sku, price, price_raw, url, image, in_stock, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+ON CONFLICT (source, url)
+DO UPDATE SET
+    price      = EXCLUDED.price,
+    price_raw  = EXCLUDED.price_raw,
+    title      = EXCLUDED.title,
+    category   = EXCLUDED.category,
+    sku        = COALESCE(EXCLUDED.sku, products.sku),
+    image      = COALESCE(EXCLUDED.image, products.image),
+    in_stock   = EXCLUDED.in_stock,
+    updated_at = NOW();
+"""
+
+async def save_to_database_bulk(products: list):
+    log.info("Connexion à PostgreSQL Supabase...")
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        unique_map = {}
+        for p in products:
+            unique_map[(p["source"], p["url"])] = p
+        deduped = list(unique_map.values())
+        log.info("Enregistrement de %d produits uniques (sur %d collectés)", len(deduped), len(products))
+
+        batch_size = 250
+        async with conn.transaction():
+            for i in range(0, len(deduped), batch_size):
+                batch = deduped[i:i + batch_size]
+                records = [
+                    (
+                        str(p["source"])[:100],
+                        str(p["category"])[:100],
+                        str(p["title"]),
+                        str(p["sku"])[:140] if p.get("sku") else None,
+                        p["price"],
+                        str(p["price_raw"])[:50] if p.get("price_raw") else None,
+                        p["url"],
+                        p.get("image"),
+                        bool(p.get("in_stock", True))
+                    )
+                    for p in batch
+                ]
+                await conn.executemany(UPSERT_QUERY, records)
+        log.info("🎉 SUCCÈS : %d produits enregistrés dans Supabase !", len(deduped))
+    finally:
+        await conn.close()
+
+# -----------------------------------------------------------------------------
+# Main Orchestrateur
+# -----------------------------------------------------------------------------
+async def main():
+    log.info("Démarrage du Grand Crawler PrixTN (National)")
+    if PROXY_URL:
+        log.info("Proxy actif : %s", PROXY_URL)
+    all_products = []
+    fetcher = Fetcher()
+    try:
+        # 1. Drest API Store JSON (27 000+ produits)
+        all_products.extend(await crawl_drest(fetcher))
+
+        # 2. Wamia GraphQL Magento (20 000+ produits)
+        all_products.extend(await crawl_wamia(fetcher))
+
+        # 3. Mytek GraphQL OpenSearch (12 000+ produits)
+        sem = asyncio.Semaphore(4)
+        all_products.extend(await crawl_mytek(fetcher, sem))
+
+        # 4. Sangour (API Store JSON + Rayons directs)
+        all_products.extend(await crawl_sangour(fetcher))
+
+        # 5. Rayons PrestaShop Multi-Pages (21 Parapharmacies + High-Tech)
+        for target in CATALOG_TARGETS:
+            items = await crawl_rayon_prestashop(
+                fetcher, target["source"], target["category"],
+                target["url"], target["max_pages"]
+            )
+            all_products.extend(items)
+            await asyncio.sleep(0.1)
+
+        # 6. Parapharmacies WooCommerce Multi-Pages
+        for source, category, base_url, max_p in WOOCOMMERCE_TARGETS:
+            items = await crawl_woocommerce_search(fetcher, source, category, base_url, max_pages=max_p)
+            all_products.extend(items)
+            await asyncio.sleep(0.1)
+
+    finally:
+        await fetcher.close()
+
+    log.info("TOTAL GLOBAL COLLECTÉ : %d produits", len(all_products))
+    if not all_products:
+        log.error("Aucun produit collecté.")
+        sys.exit(1)
+    if not DATABASE_URL:
+        log.error("DATABASE_URL absent.")
+        sys.exit(1)
+        
+    await save_to_database_bulk(all_products)
+
+if __name__ == "__main__":
+    asyncio.run(main())
