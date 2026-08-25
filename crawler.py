@@ -1,17 +1,10 @@
 """
-Crawler PrixTN - Ingestion massive nocturne du catalogue vers PostgreSQL / Supabase.
-Couverture : 
-  - Drest (API Store WooCommerce JSON : 27 000+ produits)
-  - Wamia (API GraphQL Magento : 20 000+ produits)
-  - Mytek (API GraphQL OpenSearch : 12 000+ produits)
-  - SpaceNet, Tunisianet, Yeswikam, MyCare (PrestaShop multi-pages)
-  - Sangour (Rayons WooCommerce)
+Crawler Industriel PrixTN - Couverture Maximale (Toutes Parapharmacies + High-Tech + Sangour).
 """
 import asyncio
 import html as html_lib
 import logging
 import os
-import random
 import re
 import sys
 import unicodedata
@@ -23,8 +16,8 @@ import httpx
 from bs4 import BeautifulSoup
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-PROXY_URL = os.getenv("PROXY_URL")            # ex: http://user:pass@host:port
-DREST_MAX_PAGES = int(os.getenv("DREST_MAX_PAGES", "300"))  # Jusqu'à 30 000 articles Drest
+PROXY_URL = os.getenv("PROXY_URL")
+DREST_MAX_PAGES = int(os.getenv("DREST_MAX_PAGES", "300"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s")
 log = logging.getLogger("crawler")
@@ -45,21 +38,18 @@ except ImportError:
     HAS_CFFI = False
 
 # -----------------------------------------------------------------------------
-# Parsing de Prix Universel & Détection de Titre
+# Parsing de Prix & Titres
 # -----------------------------------------------------------------------------
-_PRICE_RE = re.compile(r"(\d[\d\s.,]*)")
-
 def parse_tnd_price(raw: str) -> Optional[float]:
     if not raw:
         return None
     cleaned = unicodedata.normalize("NFKD", str(raw)).strip().lower()
     
-    # 1. Format Carrefour "249DT000"
+    # Format Carrefour
     m_c = re.search(r'(\d+)\s*(?:dt|tnd|d\.t)\s*(\d{3})', cleaned)
     if m_c:
         return float(f"{m_c.group(1)}.{m_c.group(2)}")
         
-    # 2. Format explicite DT / TND
     tnd_m = re.findall(r'(\d+[\s\.,]+\d{2,3})\s*(?:dt|tnd|d\.t|dinars?)', cleaned)
     if tnd_m:
         val_str = tnd_m[-1].replace(" ", "").replace(",", ".")
@@ -68,7 +58,6 @@ def parse_tnd_price(raw: str) -> Optional[float]:
         except ValueError:
             pass
 
-    # 3. Format standard
     cleaned_num = re.sub(r'(?:dt|tnd|dinars?|d\.t)', '', cleaned).strip()
     if "," in cleaned_num:
         cleaned_num = cleaned_num.replace(" ", "").replace(".", "").replace(",", ".")
@@ -89,7 +78,7 @@ def extract_title_link(card) -> Optional[Tuple[str, str]]:
     a = card.select_one(
         "h2.product_name a, .product_name a, h2.product-title a, h3.product-title a, "
         "h2.product-name a, a.product-name, .product-title a, .name a, h3 a, h2 a, a[title], "
-        ".wd-entities-title a, .woocommerce-loop-product__title, a.woocommerce-LoopProduct-link"
+        ".wd-entities-title a, .woocommerce-loop-product__title, a.woocommerce-LoopProduct-link, .c-post-list__header-link"
     )
     if a:
         title = a.get_text(strip=True)
@@ -105,7 +94,7 @@ def extract_title_link(card) -> Optional[Tuple[str, str]]:
     return None
 
 # -----------------------------------------------------------------------------
-# Gestionnaire HTTP Résilient (HTTPX + Repli curl_cffi Chrome TLS)
+# Gestionnaire HTTP avec repli Chrome TLS (Contourne Cloudflare Sangour)
 # -----------------------------------------------------------------------------
 class Fetcher:
     def __init__(self):
@@ -132,13 +121,13 @@ class Fetcher:
         except httpx.HTTPError as e:
             log.warning("httpx error %s : %s", url, type(e).__name__)
 
-        # Si 403 (Cloudflare/Anti-bot) et curl_cffi disponible -> tentative Chrome TLS
+        # Si 403 (Anti-bot Cloudflare) -> repli automatique curl_cffi Chrome
         if status in (403, 429, 503) and HAS_CFFI:
             try:
                 s = await self._cffi_session()
                 r2 = await s.get(url, allow_redirects=True)
                 if r2.status_code == 200:
-                    log.info("OK via curl_cffi (Chrome TLS) : %s", url)
+                    log.info("✅ Débloqué via curl_cffi (Chrome TLS) : %s", url)
                     return r2.text
                 status = r2.status_code
             except Exception as e:
@@ -189,45 +178,53 @@ class Fetcher:
             await self._cffi.close()
 
 # -----------------------------------------------------------------------------
-# Détection de Disponibilité en Stock
-# -----------------------------------------------------------------------------
-OOS_MARKERS = ("rupture de stock", "en rupture", "épuisé", "epuise", "out of stock", "sold out", "unavailable")
-
-def detect_in_stock(card) -> bool:
-    el = card.select_one(".out-of-stock, .unavailable, [class*='rupture'], [class*='epuise'], [class*='outofstock'], .stock.unavailable")
-    if el is not None:
-        return False
-    text = card.get_text(" ", strip=True).lower()
-    return not any(m in text for m in OOS_MARKERS)
-
-# -----------------------------------------------------------------------------
-# Rayons PrestaShop & WooCommerce (Multi-Pages Exhaustif)
+# TOUTES LES BOUTIQUES & PARAPHARMACIES (Catalogue National)
 # -----------------------------------------------------------------------------
 CATALOG_TARGETS = [
-    # SpaceNet
-    {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/377-smartphone-tunisie?page={page}", "max_pages": 15},
-    {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/14-pc-portable?page={page}", "max_pages": 12},
-    {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/11-informatique?page={page}", "max_pages": 12},
-    {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/15-tv-son?page={page}", "max_pages": 10},
-    {"source": "SpaceNet", "category": "Électroménager", "url": "https://spacenet.tn/46-electromenager?page={page}", "max_pages": 12},
-    {"source": "SpaceNet", "category": "Électroménager", "url": "https://spacenet.tn/47-petit-electromenager?page={page}", "max_pages": 12},
+    # 1. SPACENET (Vrais IDs officiels)
+    {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/13-telephonie-tablette?page={page}", "max_pages": 15},
+    {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/14-pc-portable?page={page}", "max_pages": 15},
+    {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/11-informatique?page={page}", "max_pages": 15},
+    {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/15-tv-son?page={page}", "max_pages": 12},
+    {"source": "SpaceNet", "category": "Électroménager", "url": "https://spacenet.tn/18-electromenager?page={page}", "max_pages": 15},
+    {"source": "SpaceNet", "category": "Électroménager", "url": "https://spacenet.tn/19-petit-electromenager?page={page}", "max_pages": 15},
+    {"source": "SpaceNet", "category": "Climatisation", "url": "https://spacenet.tn/20-climatisation-chauffage?page={page}", "max_pages": 10},
+    {"source": "SpaceNet", "category": "Beauté & Soins", "url": "https://spacenet.tn/22-beaute-sante?page={page}", "max_pages": 10},
 
-    # Tunisianet
-    {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/377-smartphone-tunisie?page={page}", "max_pages": 20},
-    {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/301-pc-portable-tunisie?page={page}", "max_pages": 15},
-    {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/302-composant-informatique-tunisie?page={page}", "max_pages": 15},
-    {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/379-televiseur?page={page}", "max_pages": 10},
-    {"source": "Tunisianet", "category": "Électroménager", "url": "https://www.tunisianet.com.tn/380-electromenager-tunisie?page={page}", "max_pages": 15},
-    {"source": "Tunisianet", "category": "Maison & Soins", "url": "https://www.tunisianet.com.tn/386-beaute-et-sante?page={page}", "max_pages": 12},
+    # 2. TUNISIANET (Vrais IDs officiels)
+    {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/377-telephone-portable-tunisie?page={page}", "max_pages": 20},
+    {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/301-pc-portable-tunisie?page={page}", "max_pages": 18},
+    {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/300-informatique-tunisie?page={page}", "max_pages": 18},
+    {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/378-tv-son-et-photos-tunisie?page={page}", "max_pages": 15},
+    {"source": "Tunisianet", "category": "Électroménager", "url": "https://www.tunisianet.com.tn/439-electromenager-tunisie?page={page}", "max_pages": 18},
+    {"source": "Tunisianet", "category": "Petit Électro", "url": "https://www.tunisianet.com.tn/440-petit-electromenager-tunisie?page={page}", "max_pages": 18},
+    {"source": "Tunisianet", "category": "Climatisation", "url": "https://www.tunisianet.com.tn/505-climatisation-et-chauffage?page={page}", "max_pages": 12},
+    {"source": "Tunisianet", "category": "Beauté & Soins", "url": "https://www.tunisianet.com.tn/690-beaute-et-sante?page={page}", "max_pages": 15},
 
-    # Yeswikam & MyCare
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/2-accueil?page={page}", "max_pages": 30},
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/recherche?s=gel&page={page}", "max_pages": 10},
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/recherche?s=creme&page={page}", "max_pages": 10},
-    {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?s=soin&page={page}", "max_pages": 12},
+    # 3. PARAPHARMACIES (Yeswikam, Parastore, Paraforce, MyCare, MaParaTunisie)
+    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/2-accueil?page={page}", "max_pages": 40},
+    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/3-visage?page={page}", "max_pages": 25},
+    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/4-corps?page={page}", "max_pages": 20},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=soin&page={page}", "max_pages": 20},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=gel&page={page}", "max_pages": 15},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=creme&page={page}", "max_pages": 15},
+    {"source": "Paraforce", "category": "Parapharmacie", "url": "https://paraforce.tn/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "MaParaTunisie", "category": "Parapharmacie", "url": "https://www.maparatunisie.tn/?s=soin&post_type=product&paged={page}", "max_pages": 15},
+
+    # 4. ÉLECTROMÉNAGER & HIGH-TECH (Batam, Technopro, SBS, Darty)
+    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=electromenager&page={page}", "max_pages": 15},
+    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=tv&page={page}", "max_pages": 10},
+    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=climatiseur&page={page}", "max_pages": 10},
+    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?s=smartphone&page={page}", "max_pages": 15},
+    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?s=pc+portable&page={page}", "max_pages": 15},
+    {"source": "SBS Informatique", "category": "Gaming & PC", "url": "https://www.sbsinformatique.com/recherche?s=pc+gamer&page={page}", "max_pages": 15},
+    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?s=electromenager&page={page}", "max_pages": 12},
+    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?s=moulinex&page={page}", "max_pages": 10},
+    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?s=philips&page={page}", "max_pages": 10},
 ]
 
+# 5. SANGOUR (Entretien, Judy, Détergents, Cuisine)
 SANGOUR_RAYONS = [
     ("Maison & Entretien", "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/javel/"),
     ("Maison & Entretien", "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/sol/"),
@@ -243,15 +240,24 @@ SANGOUR_RAYONS = [
 ]
 
 # -----------------------------------------------------------------------------
-# Parsing de Cartes Produits
+# Fonctions de Scraping
 # -----------------------------------------------------------------------------
+OOS_MARKERS = ("rupture de stock", "en rupture", "épuisé", "epuise", "out of stock", "sold out", "unavailable")
+
+def detect_in_stock(card) -> bool:
+    el = card.select_one(".out-of-stock, .unavailable, [class*='rupture'], [class*='epuise'], [class*='outofstock'], .stock.unavailable")
+    if el is not None:
+        return False
+    text = card.get_text(" ", strip=True).lower()
+    return not any(m in text for m in OOS_MARKERS)
+
 def parse_products(html: str, source: str, category: str, page_url: str) -> list:
     products = []
     soup = BeautifulSoup(html, "html.parser")
     cards = soup.select(
         ".product-grid-item, .wd-product, div.product, li.product, "
         "article.product-miniature, .product-miniature, .product-item, "
-        "div.product-small, .ajax_block_product"
+        "div.product-small, .ajax_block_product, .c-post-list"
     )
 
     for p in cards:
@@ -263,7 +269,7 @@ def parse_products(html: str, source: str, category: str, page_url: str) -> list
         )
         img_tag = p.select_one(
             ".product-element-top img, img.wp-post-image, img.product_image, "
-            ".thumbnail-container img, .product-thumbnail img, img"
+            ".thumbnail-container img, .product-thumbnail img, img, .c-post-list__thumb img"
         )
         ref_tag = p.select_one(".product-reference, .reference, [itemprop='sku'], .sku")
 
@@ -352,7 +358,7 @@ async def crawl_mytek(fetcher: Fetcher, sem: asyncio.Semaphore) -> list:
 
     async def crawl_keyword(term: str):
         page, local = 1, []
-        while page <= 10:
+        while page <= 12:
             payload = {
                 "query": MYTEK_QUERY,
                 "variables": {"search": term, "page": page, "pageSize": 100},
@@ -583,23 +589,23 @@ async def save_to_database_bulk(products: list):
 # Main Orchestrateur
 # -----------------------------------------------------------------------------
 async def main():
-    log.info("Démarrage du Grand Crawler PrixTN")
+    log.info("Démarrage du Grand Crawler PrixTN (National)")
     if PROXY_URL:
         log.info("Proxy actif : %s", PROXY_URL)
     all_products = []
     fetcher = Fetcher()
     try:
-        # 1. Drest via API Store JSON (27 000+ produits)
+        # 1. Drest API Store JSON (27 000+ produits)
         all_products.extend(await crawl_drest(fetcher))
 
-        # 2. Wamia via GraphQL Magento (20 000+ produits)
+        # 2. Wamia GraphQL Magento (20 000+ produits)
         all_products.extend(await crawl_wamia(fetcher))
 
-        # 3. Mytek via GraphQL OpenSearch (12 000+ produits)
+        # 3. Mytek GraphQL OpenSearch (12 000+ produits)
         sem = asyncio.Semaphore(4)
         all_products.extend(await crawl_mytek(fetcher, sem))
 
-        # 4. Rayons PrestaShop Multi-Pages (SpaceNet, Tunisianet, Yeswikam, MyCare)
+        # 4. Rayons PrestaShop Multi-Pages (SpaceNet, Tunisianet, Yeswikam, Parastore, Batam, Technopro...)
         for target in CATALOG_TARGETS:
             items = await crawl_rayon_prestashop(
                 fetcher, target["source"], target["category"],
@@ -608,7 +614,7 @@ async def main():
             all_products.extend(items)
             await asyncio.sleep(0.15)
 
-        # 5. Rayons Sangour (WooCommerce)
+        # 5. Rayons Sangour (WooCommerce + curl_cffi Chrome TLS)
         for category, url in SANGOUR_RAYONS:
             items = await crawl_rayon_woocommerce(fetcher, "Sangour", category, url, max_pages=10)
             all_products.extend(items)
