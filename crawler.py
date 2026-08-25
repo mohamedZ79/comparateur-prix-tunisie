@@ -75,23 +75,40 @@ def parse_tnd_price(raw: str) -> Optional[float]:
     return None
 
 def extract_title_link(card) -> Optional[Tuple[str, str]]:
+    """Extrait (titre, href) d'une carte produit, robuste aux themes.
+
+    Certains themes PrestaShop (yeswikam, darty, sbs, parafendri - verifie
+    aout 2026) ne mettent PAS le titre dans le heading : le heading porte
+    la marque ou rien, et le vrai titre vit dans une ancre simple.
+    Strategie : heading si texte >= 10, sinon ancre produit la plus
+    descriptive (liens marque/categorie/UI exclus).
+    """
     a = card.select_one(
-        "h2.product_name a, .product_name a, h2.product-title a, h3.product-title a, "
-        "h2.product-name a, a.product-name, .product-title a, .name a, h3 a, h2 a, a[title], "
-        ".wd-entities-title a, .woocommerce-loop-product__title, a.woocommerce-LoopProduct-link, "
-        ".c-post-list__header-link, p.name.product-title a"
-    )
+        "h2.product_name a, .product_name a, h2.product-title a, "
+        "h3.product-title a, h2.product-name a, a.product-name, "
+        ".product-title a, .woocommerce-loop-product__title a, "
+        ".wd-entities-title a, .name a")
     if a:
-        title = a.get_text(strip=True)
-        href = a.get("href", "")
-        if title and href:
-            return title, href
-    link = card.select_one("a[href]")
-    if link:
-        title = link.get_text(strip=True) or card.get("title", "")
-        href = link.get("href", "")
-        if title and href:
-            return title, href
+        text = a.get_text(strip=True)
+        if len(text) >= 10:
+            return text, a.get("href", "")
+
+    best_text, best_href = "", ""
+    for link in card.select("a[href]"):
+        href = link.get("href") or ""
+        text = link.get_text(strip=True)
+        if not href or href.startswith("#"):
+            continue
+        if "/marque/" in href or "/brand/" in href or "/manufacturer" in href:
+            continue
+        if not text or text.lower() in _UI_TEXTS or len(text) < 10:
+            continue
+        if len(text) > len(best_text):
+            best_text, best_href = text, href
+    if best_text:
+        return best_text, best_href
+    if a:
+        return a.get_text(strip=True), a.get("href", "")
     return None
 
 # -----------------------------------------------------------------------------
@@ -100,7 +117,7 @@ def extract_title_link(card) -> Optional[Tuple[str, str]]:
 class Fetcher:
     def __init__(self):
         self.client = httpx.AsyncClient(
-            follow_redirects=True, verify=False,
+            follow_redirects=True, verify=True,
             timeout=httpx.Timeout(15.0, connect=10.0),
             headers=HEADERS,
             proxy=PROXY_URL if PROXY_URL else None,
@@ -185,28 +202,27 @@ CATALOG_TARGETS = [
     {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/3-visage?page={page}", "max_pages": 30},
     {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/4-corps?page={page}", "max_pages": 25},
     
-    {"source": "Pharma-Shop", "category": "Parapharmacie", "url": "https://pharma-shop.tn/3-visage?page={page}", "max_pages": 25},
-    {"source": "Pharma-Shop", "category": "Parapharmacie", "url": "https://pharma-shop.tn/4-corps?page={page}", "max_pages": 20},
-    {"source": "Pharma-Shop", "category": "Parapharmacie", "url": "https://pharma-shop.tn/5-cheveux?page={page}", "max_pages": 20},
-    {"source": "Pharma-Shop", "category": "Parapharmacie", "url": "https://pharma-shop.tn/6-solaire?page={page}", "max_pages": 15},
+    # Pharma-Shop : 403 Cloudflare sur toutes les pages - retire
+    # (4 rayons supprimes)
 
-    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/3-visage?page={page}", "max_pages": 25},
-    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/4-corps?page={page}", "max_pages": 20},
-    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/5-cheveux?page={page}", "max_pages": 15},
+    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/categorie/visage?page={page}", "max_pages": 25},
+    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/categorie/corps?page={page}", "max_pages": 20},
+    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/categorie/cheveux?page={page}", "max_pages": 15},
 
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/3-visage?page={page}", "max_pages": 25},
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/4-corps?page={page}", "max_pages": 20},
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/5-cheveux?page={page}", "max_pages": 15},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 25},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?controller=search&s=visage&page={page}", "max_pages": 20},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?controller=search&s=corps&page={page}", "max_pages": 15},
 
     {"source": "Parashop", "category": "Parapharmacie", "url": "https://www.parashop.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 25},
     {"source": "Paralabel", "category": "Parapharmacie", "url": "https://www.paralabel.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
     {"source": "Para Fendri", "category": "Parapharmacie", "url": "https://parafendri.tn/3-visage?page={page}", "max_pages": 20},
     {"source": "Para Fendri", "category": "Parapharmacie", "url": "https://parafendri.tn/4-corps?page={page}", "max_pages": 20},
     {"source": "Para House", "category": "Parapharmacie", "url": "https://www.parahouse.tn/fr/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
-    {"source": "La Para du Lac", "category": "Parapharmacie", "url": "https://laparadulac.com/3-visage?page={page}", "max_pages": 20},
+    {"source": "La Para du Lac", "category": "Parapharmacie", "url": "https://laparadulac.com/collections/visage?page={page}", "max_pages": 20},
     {"source": "Taicir Fendri", "category": "Parapharmacie", "url": "https://www.taicir.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
     {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 25},
-    {"source": "Paraforce", "category": "Parapharmacie", "url": "https://paraforce.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
+    # Paraforce.tn : domaine mort (NXDOMAIN) - retire
+    # Pharma-Shop : 403 Cloudflare sur toutes les pages - retire
 
     # --- 2. PARAPHARMACIES WOOCOMMERCE ---
     {"source": "Parapharmacie.tn", "category": "Parapharmacie", "url": "https://parapharmacie.tn/page/{page}/?s=soin&post_type=product", "max_pages": 25},
@@ -311,10 +327,25 @@ async def crawl_page(fetcher: Fetcher, source: str, category: str, url: str) -> 
         return []
     return parse_products(html, source, category, url)
 
+def build_url(url_tpl: str, page: int) -> str:
+    """Construit l'URL pour une page donnee.
+
+    WordPress : /page/{page}/ dans le template -> page 1 = URL de base
+    sans /page/1/ (sinon 404 sur la plupart des configs WP).
+    PrestaShop : ?page={page} ou &page={page} -> page 1 = sans le parametre
+    (some themes redirect ?page=1 vers une autre categorie).
+    """
+    if page == 1:
+        return (url_tpl
+                .replace("/page/{page}/", "/")
+                .replace("&page={page}", "")
+                .replace("?page={page}", ""))
+    return url_tpl.format(page=page)
+
 async def crawl_rayon(fetcher: Fetcher, source: str, category: str, url_tpl: str, max_pages: int, batch: int = 3) -> list:
     products, page = [], 1
     while page <= max_pages:
-        urls = [url_tpl.format(page=p) for p in range(page, page + batch)]
+        urls = [build_url(url_tpl, p) for p in range(page, page + batch)]
         results = await asyncio.gather(*(crawl_page(fetcher, source, category, u) for u in urls))
         if not any(results):
             break
