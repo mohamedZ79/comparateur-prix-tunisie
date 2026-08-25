@@ -383,6 +383,74 @@ async def scrape_drest(query: str, client: httpx.AsyncClient) -> list[ProductOff
         ))
     return offers
 
+# --- SANGOUR (WooCommerce Store API, behind Cloudflare => needs PROXY_URL) ---
+SANGOUR_STORE_API = "https://sangour.tn/wp-json/wc/store/products"
+_SANGOUR_PROXY = os.getenv("PROXY_URL")  # IP residentielle ES/FR requise
+
+async def _sangour_fetch(query: str, client: httpx.AsyncClient) -> list:
+    """Store API Sangour. Cloudflare bloque les IP datacenter ; on envoie
+    d'abord via le client httpx fourni (qui peut avoir un proxy), puis repli
+    curl_cffi (TLS Chrome) - le tout tente de passer par PROXY_URL si present."""
+    params = {"search": query, "per_page": 30}
+    headers = {"Accept": "application/json"}
+    # tentative 1 : httpx (peut porter un proxy si l'API server a PROXY_URL)
+    try:
+        r = await client.get(SANGOUR_STORE_API, params=params, headers=headers)
+        if r.status_code == 200:
+            return r.json() or []
+    except Exception:
+        pass
+    # tentative 2 : curl_cffi avec proxy explicite si dispo
+    try:
+        from curl_cffi.requests import AsyncSession
+        kw = {"impersonate": "chrome124", "timeout": 15, "headers": headers}
+        if _SANGOUR_PROXY:
+            kw["proxy"] = _SANGOUR_PROXY
+        async with AsyncSession(**kw) as s:
+            r2 = await s.get(SANGOUR_STORE_API, params=params, allow_redirects=True)
+            if r2.status_code == 200:
+                return r2.json() or []
+    except Exception:
+        pass
+    return []
+
+async def scrape_sangour(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:
+    items = await _sangour_fetch(query, client)
+    offers = []
+    for it in items:
+        title = _html.unescape((it.get("name") or "")).strip()
+        prices = it.get("prices") or {}
+        minor = int(prices.get("currency_minor_unit") or 0)
+        raw_price = prices.get("price") or prices.get("regular_price")
+        url = it.get("permalink") or ""
+        if not title or not raw_price:
+            continue
+        try:
+            if minor:
+                price_val = round(int(raw_price) / (10 ** minor), 3)
+            else:
+                # Sangour peut renvoyer le prix en centimes sans minor_unit
+                price_val = round(int(raw_price) / 100, 3)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if price_val <= 0:
+            continue
+        valid, score = is_strict_match(query, title, url)
+        if not valid:
+            continue
+        images = it.get("images") or []
+        offers.append(ProductOffer(
+            source="Sangour",
+            title=title,
+            price=price_val,
+            price_raw=f"{price_val:,.3f} TND",
+            url=url,
+            image=images[0].get("src") if images else None,
+            availability="En stock" if it.get("is_in_stock", True) else "Rupture",
+            match_score=score,
+        ))
+    return offers
+
 # --- MYTEK GRAPHQL ---
 MYTEK_GRAPHQL = "https://www.mytek.tn/graphql"
 MYTEK_MEDIA = "https://www.mytek.tn/media/catalog/product"
@@ -519,6 +587,7 @@ SCRAPERS = {
     "sbs": scrape_sbs,
     "mycare": scrape_mycare,
     "drest": scrape_drest,
+    "sangour": scrape_sangour,
 }
 
 # Categorie de chaque boutique - source de verite unique pour la CI
@@ -535,6 +604,7 @@ SHOP_CATEGORY = {
     "yeswikam": "parapharmacie",
     "mycare": "parapharmacie",
     "drest": "parapharmacie",
+    "sangour": "maison",
 }
 
 # ------------------------------------------------------------- orchestrateur
@@ -542,7 +612,11 @@ SHOP_CATEGORY = {
 PER_SITE_TIMEOUT = 5.0   # ✅ Réponse ultra-rapide en 2-3 secondes
 
 async def search_all(query: str) -> dict:
-    async with httpx.AsyncClient(http2=False) as client:
+    # PROXY_URL est necessaire pour Sangour (Cloudflare IP-block) ; si present
+    # sur le serveur API, on le passe au client httpx partage pour qu'il soit
+    # utilise par tous les scrapers (les autres boutiques l'ignoreront sans effet).
+    _proxy = os.getenv("PROXY_URL") or None
+    async with httpx.AsyncClient(http2=False, proxy=_proxy, timeout=8.0) as client:
         async def guarded(name, fn):
             try:
                 return name, await asyncio.wait_for(fn(query, client), timeout=PER_SITE_TIMEOUT), None

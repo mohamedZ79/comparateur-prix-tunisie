@@ -357,58 +357,137 @@ async def crawl_rayon(fetcher: Fetcher, source: str, category: str, url_tpl: str
     return products
 
 # -----------------------------------------------------------------------------
-# SANGOUR (Flux XML / RSS Direct - Débloque 100% de Sangour)
+# SANGOUR (WooCommerce Store API + Flux RSS de repli)
 # -----------------------------------------------------------------------------
-async def crawl_sangour(fetcher: Fetcher) -> list:
-    log.info("Démarrage du crawl Sangour via Flux Produit...")
-    products, seen = [], set()
-    
-    # 1. Flux RSS direct de la boutique (Bypasse totalement Cloudflare)
-    feed_urls = [
-        "https://sangour.tn/feed/?post_type=product",
-        "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/javel/feed/",
-        "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/sol/feed/",
-        "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/vaisselles/feed/",
-        "https://sangour.tn/marques/judy/feed/",
-        "https://sangour.tn/marques/tramontina/feed/",
-        "https://sangour.tn/marques/tefal/feed/",
-        "https://sangour.tn/marques/moulinex/feed/"
-    ]
-    
-    for f_url in feed_urls:
-        xml_text = await fetcher.get(f_url)
-        if xml_text and "<item>" in xml_text:
-            items = re.findall(r'<item>(.*?)</item>', xml_text, re.DOTALL)
-            for it in items:
-                title_m = re.search(r'<title>(.*?)</title>', it)
-                link_m = re.search(r'<link>(.*?)</link>', it)
-                if not (title_m and link_m):
+# NOTE (audit 2026) : sangour.tn est derriere Cloudflare avec blocage IP
+# strict. Depuis une IP datacenter (GitHub Actions US, ce serveur), TOUS les
+# endpoints retournent 403 (HTML, /wp-json/wc/store/products, /feed, sitemap).
+# Solution : PROXY_URL doit pointer vers une IP residentielle (Espagne, FR,
+# etc.). La logique ci-dessous essaie d'abord l'API Store JSON (la plus fiable
+# via proxy residentiel, meme astuce que Drest), puis repli sur les flux RSS.
+# Si PROXY_URL est absent, Sangour est saute avec un avertissement clair.
+
+SANGOUR_BASE = "https://sangour.tn"
+SANGOUR_STORE_API = "https://sangour.tn/wp-json/wc/store/products"
+SANGOUR_FEED_URLS = [
+    "https://sangour.tn/feed/?post_type=product",
+    "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/javel/feed/",
+    "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/sol/feed/",
+    "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/vaisselles/feed/",
+    "https://sangour.tn/marques/judy/feed/",
+    "https://sangour.tn/marques/tramontina/feed/",
+    "https://sangour.tn/marques/tefal/feed/",
+    "https://sangour.tn/marques/moulinex/feed/",
+]
+
+async def _crawl_sangour_store_api(fetcher: Fetcher, seen: set) -> list:
+    """Crawl via WooCommerce Store API (JSON, ~100 produits/page, 100 pages max)."""
+    products = []
+    for page in range(1, 101):
+        body = await fetcher.get_json(SANGOUR_STORE_API, params={"per_page": 100, "page": page})
+        if not isinstance(body, list) or not body:
+            break
+        for it in body:
+            try:
+                # prix en unite mineure (cents) comme Drest
+                price_cents = it.get("prices", {}).get("price") or it.get("price")
+                if not price_cents:
                     continue
-                title = html_lib.unescape(title_m.group(1)).strip()
-                url = link_m.group(1).strip()
-                if url in seen:
+                try:
+                    price_val = parse_tnd_price(str(int(price_cents) / 100)) or \
+                                parse_tnd_price(str(price_cents))
+                except (ValueError, TypeError):
+                    price_val = parse_tnd_price(str(price_cents))
+                if not price_val or price_val <= 0:
                     continue
-                seen.add(url)
-                
-                price_m = re.search(r'(?:<g:price>|Prix\s*:\s*|amount">)([\d\.,\s]+(?:TND|DT))', it)
-                price_val = parse_tnd_price(price_m.group(1)) if price_m else None
-                img_m = re.search(r'(?:<g:image_link>|<media:content[^>]*url=")([^"]+)', it)
-                img_url = img_m.group(1) if img_m else None
-                
-                if title and price_val and price_val > 0:
+                permalink = it.get("permalink") or it.get("link")
+                if not permalink or permalink in seen:
+                    continue
+                seen.add(permalink)
+                # extraction d'image (variantes possibles entre versions WC)
+                img = None
+                imgs = it.get("images") or []
+                if imgs and isinstance(imgs, list):
+                    img = imgs[0].get("src") or imgs[0].get("thumbnail")
+                title = html_lib.unescape(it.get("name", "")).strip()
+                # type de produit : 'simple' = en stock / 'variation' = variantes
+                ptype = it.get("type", "simple")
+                in_stock = bool(it.get("is_in_stock", True)) and ptype != "external"
+                # categorie : WC Store API renvoie une liste de dicts ou des strings
+                cats = it.get("categories", [])
+                if isinstance(cats, list) and cats:
+                    c0 = cats[0]
+                    cat = c0.get("name") if isinstance(c0, dict) else str(c0)
+                else:
+                    cat = "Maison & Entretien"
+                if title and permalink:
                     products.append({
                         "source": "Sangour",
-                        "category": "Maison & Entretien",
+                        "category": str(cat)[:100],
                         "title": title,
-                        "sku": None,
+                        "sku": it.get("sku"),
                         "price": price_val,
                         "price_raw": f"{price_val:,.3f} TND",
-                        "url": url,
-                        "image": img_url,
-                        "in_stock": True,
+                        "url": permalink,
+                        "image": img,
+                        "in_stock": in_stock,
                     })
+            except Exception:
+                continue
+        await asyncio.sleep(0.05)
+    log.info("[Sangour] Store API : %d produits", len(products))
+    return products
 
-    log.info("[Sangour] Total collecté : %d produits", len(products))
+async def _crawl_sangour_rss(fetcher: Fetcher, seen: set) -> list:
+    """Repli : flux RSS produits (toutes categories + quelques marques cles)."""
+    products = []
+    for f_url in SANGOUR_FEED_URLS:
+        xml_text = await fetcher.get(f_url)
+        if not xml_text or "<item>" not in xml_text:
+            continue
+        items = re.findall(r'<item>(.*?)</item>', xml_text, re.DOTALL)
+        for it in items:
+            title_m = re.search(r'<title>(.*?)</title>', it)
+            link_m = re.search(r'<link>(.*?)</link>', it)
+            if not (title_m and link_m):
+                continue
+            title = html_lib.unescape(title_m.group(1)).strip()
+            url = link_m.group(1).strip()
+            if url in seen:
+                continue
+            seen.add(url)
+            price_m = re.search(r'(?:<g:price>|Prix\s*:\s*|amount">)([\d\.,\s]+(?:TND|DT))', it)
+            price_val = parse_tnd_price(price_m.group(1)) if price_m else None
+            img_m = re.search(r'(?:<g:image_link>|<media:content[^>]*url=")([^"]+)', it)
+            img_url = img_m.group(1) if img_m else None
+            if title and price_val and price_val > 0:
+                products.append({
+                    "source": "Sangour",
+                    "category": "Maison & Entretien",
+                    "title": title,
+                    "sku": None,
+                    "price": price_val,
+                    "price_raw": f"{price_val:,.3f} TND",
+                    "url": url,
+                    "image": img_url,
+                    "in_stock": True,
+                })
+    log.info("[Sangour] Flux RSS : %d produits", len(products))
+    return products
+
+async def crawl_sangour(fetcher: Fetcher) -> list:
+    log.info("Demarrage du crawl Sangour (Store API + RSS)...")
+    if not PROXY_URL:
+        log.warning("[Sangour] PROXY_URL absent : Cloudflare va bloquer (403). "
+                    "Configurez PROXY_URL (IP residentielle ES/FR) pour activer Sangour.")
+    seen, products = set(), []
+    # 1. Store API (WooCommerce JSON) - priorite 1
+    products.extend(await _crawl_sangour_store_api(fetcher, seen))
+    # 2. RSS feeds - repli si l'API Store a retourne 0 produit
+    if not products:
+        log.info("[Sangour] Store API vide, repli sur les flux RSS...")
+        products.extend(await _crawl_sangour_rss(fetcher, seen))
+    log.info("[Sangour] Total collecte : %d produits", len(products))
     return products
 
 # -----------------------------------------------------------------------------
