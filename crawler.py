@@ -594,13 +594,21 @@ async def save_to_database_bulk(products: list):
             for i in range(0, len(deduped), batch_size):
                 batch = deduped[i:i + batch_size]
                 records = [
-                    (p["source"], p["category"], p["title"], p["sku"],
-                     p["price"], p["price_raw"], p["url"], p["image"],
-                     p["in_stock"])
+                    (
+                        str(p["source"])[:100],
+                        str(p["category"])[:100],
+                        str(p["title"]),
+                        str(p["sku"])[:140] if p.get("sku") else None,
+                        p["price"],
+                        str(p["price_raw"])[:50] if p.get("price_raw") else None,
+                        p["url"],
+                        p.get("image"),
+                        bool(p.get("in_stock", True))
+                    )
                     for p in batch
                 ]
                 await conn.executemany(UPSERT_QUERY, records)
-        log.info("SUCCES : %d produits enregistres", len(deduped))
+        log.info("SUCCES : %d produits enregistres dans Supabase !", len(deduped))
     finally:
         await conn.close()
 
