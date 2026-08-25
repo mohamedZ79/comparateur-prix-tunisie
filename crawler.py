@@ -1,10 +1,11 @@
 """
-Crawler Industriel PrixTN - Couverture Maximale (Toutes Parapharmacies + High-Tech + Sangour).
+Crawler National PrixTN - Intégration Complète de TOUTES les Parapharmacies + High-Tech + Sangour.
 """
 import asyncio
 import html as html_lib
 import logging
 import os
+import random
 import re
 import sys
 import unicodedata
@@ -45,7 +46,7 @@ def parse_tnd_price(raw: str) -> Optional[float]:
         return None
     cleaned = unicodedata.normalize("NFKD", str(raw)).strip().lower()
     
-    # Format Carrefour
+    # Format Carrefour (ex: "249DT000")
     m_c = re.search(r'(\d+)\s*(?:dt|tnd|d\.t)\s*(\d{3})', cleaned)
     if m_c:
         return float(f"{m_c.group(1)}.{m_c.group(2)}")
@@ -78,7 +79,8 @@ def extract_title_link(card) -> Optional[Tuple[str, str]]:
     a = card.select_one(
         "h2.product_name a, .product_name a, h2.product-title a, h3.product-title a, "
         "h2.product-name a, a.product-name, .product-title a, .name a, h3 a, h2 a, a[title], "
-        ".wd-entities-title a, .woocommerce-loop-product__title, a.woocommerce-LoopProduct-link, .c-post-list__header-link"
+        ".wd-entities-title a, .woocommerce-loop-product__title, a.woocommerce-LoopProduct-link, "
+        ".c-post-list__header-link, p.name.product-title a"
     )
     if a:
         title = a.get_text(strip=True)
@@ -94,7 +96,7 @@ def extract_title_link(card) -> Optional[Tuple[str, str]]:
     return None
 
 # -----------------------------------------------------------------------------
-# Gestionnaire HTTP avec repli Chrome TLS (Contourne Cloudflare Sangour)
+# Fetcher Résilient avec repli Chrome TLS (Contourne Cloudflare)
 # -----------------------------------------------------------------------------
 class Fetcher:
     def __init__(self):
@@ -108,7 +110,7 @@ class Fetcher:
 
     async def _cffi_session(self):
         if self._cffi is None and HAS_CFFI:
-            self._cffi = CffiSession(impersonate="chrome", proxy=PROXY_URL if PROXY_URL else None, timeout=20)
+            self._cffi = CffiSession(impersonate="chrome124", proxy=PROXY_URL if PROXY_URL else None, timeout=20)
         return self._cffi
 
     async def get(self, url: str) -> Optional[str]:
@@ -121,7 +123,6 @@ class Fetcher:
         except httpx.HTTPError as e:
             log.warning("httpx error %s : %s", url, type(e).__name__)
 
-        # Si 403 (Anti-bot Cloudflare) -> repli automatique curl_cffi Chrome
         if status in (403, 429, 503) and HAS_CFFI:
             try:
                 s = await self._cffi_session()
@@ -178,10 +179,37 @@ class Fetcher:
             await self._cffi.close()
 
 # -----------------------------------------------------------------------------
-# TOUTES LES BOUTIQUES & PARAPHARMACIES (Catalogue National)
+# TOUTES LES 21 PARAPHARMACIES + HIGH-TECH DU MARCHÉ TUNISIEN
 # -----------------------------------------------------------------------------
 CATALOG_TARGETS = [
-    # 1. SPACENET (Vrais IDs officiels)
+    # --- 1. LE RÉSEAU NATIONAL DES PARAPHARMACIES (21 Enseignes) ---
+    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/2-accueil?page={page}", "max_pages": 40},
+    {"source": "Parashop", "category": "Parapharmacie", "url": "https://www.parashop.tn/recherche?s=soin&page={page}", "max_pages": 20},
+    {"source": "Pharma-Shop", "category": "Parapharmacie", "url": "https://pharma-shop.tn/recherche?s=soin&page={page}", "max_pages": 20},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=soin&page={page}", "max_pages": 20},
+    {"source": "Paralabel", "category": "Parapharmacie", "url": "https://www.paralabel.tn/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/recherche?s=soin&page={page}", "max_pages": 20},
+    {"source": "Phytonat", "category": "Parapharmacie", "url": "https://phytonat.tn/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "Para Fendri", "category": "Parapharmacie", "url": "https://parafendri.tn/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "Para House", "category": "Parapharmacie", "url": "https://www.parahouse.tn/fr/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "Para du Bonheur", "category": "Parapharmacie", "url": "https://paradubonheur.tn/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "La Para du Lac", "category": "Parapharmacie", "url": "https://laparadulac.com/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "Taicir Fendri", "category": "Parapharmacie", "url": "https://www.taicir.tn/recherche?s=soin&page={page}", "max_pages": 15},
+    {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?s=soin&page={page}", "max_pages": 20},
+    {"source": "Paraforce", "category": "Parapharmacie", "url": "https://paraforce.tn/recherche?s=soin&page={page}", "max_pages": 15},
+    
+    # Parapharmacies WooCommerce
+    {"source": "Parapharmacie.tn", "category": "Parapharmacie", "url": "https://parapharmacie.tn/?s=soin&post_type=product&paged={page}", "max_pages": 20},
+    {"source": "MaPara Tunisie", "category": "Parapharmacie", "url": "https://www.maparatunisie.tn/?s=soin&post_type=product&paged={page}", "max_pages": 20},
+    {"source": "MS Para", "category": "Parapharmacie", "url": "https://mspara.com/?s=soin&post_type=product&paged={page}", "max_pages": 15},
+    {"source": "Tunisie Para", "category": "Parapharmacie", "url": "https://tunisiepara.com/?s=soin&post_type=product&paged={page}", "max_pages": 15},
+    {"source": "ParaTunisie", "category": "Parapharmacie", "url": "https://www.paratunisie.com/?s=soin&post_type=product&paged={page}", "max_pages": 15},
+    {"source": "ParaHealth", "category": "Parapharmacie", "url": "https://parahealth.tn/?s=soin&post_type=product&paged={page}", "max_pages": 15},
+    {"source": "Paraepharma", "category": "Parapharmacie", "url": "https://paraepharma.com/?s=soin&post_type=product&paged={page}", "max_pages": 15},
+    {"source": "Skincare Para", "category": "Parapharmacie", "url": "https://skincarepara.com/?s=soin&post_type=product&paged={page}", "max_pages": 12},
+    {"source": "Coquette.tn", "category": "Parapharmacie", "url": "https://www.coquette.tn/?s=soin&post_type=product&paged={page}", "max_pages": 12},
+
+    # --- 2. HIGH-TECH, PC, TÉLÉPHONIE & ÉLECTROMÉNAGER ---
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/13-telephonie-tablette?page={page}", "max_pages": 15},
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/14-pc-portable?page={page}", "max_pages": 15},
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/11-informatique?page={page}", "max_pages": 15},
@@ -191,7 +219,6 @@ CATALOG_TARGETS = [
     {"source": "SpaceNet", "category": "Climatisation", "url": "https://spacenet.tn/20-climatisation-chauffage?page={page}", "max_pages": 10},
     {"source": "SpaceNet", "category": "Beauté & Soins", "url": "https://spacenet.tn/22-beaute-sante?page={page}", "max_pages": 10},
 
-    # 2. TUNISIANET (Vrais IDs officiels)
     {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/377-telephone-portable-tunisie?page={page}", "max_pages": 20},
     {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/301-pc-portable-tunisie?page={page}", "max_pages": 18},
     {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/300-informatique-tunisie?page={page}", "max_pages": 18},
@@ -201,30 +228,15 @@ CATALOG_TARGETS = [
     {"source": "Tunisianet", "category": "Climatisation", "url": "https://www.tunisianet.com.tn/505-climatisation-et-chauffage?page={page}", "max_pages": 12},
     {"source": "Tunisianet", "category": "Beauté & Soins", "url": "https://www.tunisianet.com.tn/690-beaute-et-sante?page={page}", "max_pages": 15},
 
-    # 3. PARAPHARMACIES (Yeswikam, Parastore, Paraforce, MyCare, MaParaTunisie)
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/2-accueil?page={page}", "max_pages": 40},
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/3-visage?page={page}", "max_pages": 25},
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/4-corps?page={page}", "max_pages": 20},
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=soin&page={page}", "max_pages": 20},
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=gel&page={page}", "max_pages": 15},
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=creme&page={page}", "max_pages": 15},
-    {"source": "Paraforce", "category": "Parapharmacie", "url": "https://paraforce.tn/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "MaParaTunisie", "category": "Parapharmacie", "url": "https://www.maparatunisie.tn/?s=soin&post_type=product&paged={page}", "max_pages": 15},
-
-    # 4. ÉLECTROMÉNAGER & HIGH-TECH (Batam, Technopro, SBS, Darty)
     {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=electromenager&page={page}", "max_pages": 15},
     {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=tv&page={page}", "max_pages": 10},
-    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=climatiseur&page={page}", "max_pages": 10},
     {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?s=smartphone&page={page}", "max_pages": 15},
     {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?s=pc+portable&page={page}", "max_pages": 15},
     {"source": "SBS Informatique", "category": "Gaming & PC", "url": "https://www.sbsinformatique.com/recherche?s=pc+gamer&page={page}", "max_pages": 15},
     {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?s=electromenager&page={page}", "max_pages": 12},
-    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?s=moulinex&page={page}", "max_pages": 10},
-    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?s=philips&page={page}", "max_pages": 10},
 ]
 
-# 5. SANGOUR (Entretien, Judy, Détergents, Cuisine)
+# --- 3. SANGOUR (Détergents, Judy, Javel, Cuisine Tramontina, Tefal) ---
 SANGOUR_RAYONS = [
     ("Maison & Entretien", "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/javel/"),
     ("Maison & Entretien", "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/sol/"),
@@ -240,7 +252,7 @@ SANGOUR_RAYONS = [
 ]
 
 # -----------------------------------------------------------------------------
-# Fonctions de Scraping
+# Fonctions de Scraping Asynchrone
 # -----------------------------------------------------------------------------
 OOS_MARKERS = ("rupture de stock", "en rupture", "épuisé", "epuise", "out of stock", "sold out", "unavailable")
 
@@ -269,7 +281,7 @@ def parse_products(html: str, source: str, category: str, page_url: str) -> list
         )
         img_tag = p.select_one(
             ".product-element-top img, img.wp-post-image, img.product_image, "
-            ".thumbnail-container img, .product-thumbnail img, img, .c-post-list__thumb img"
+            ".thumbnail-container img, .product-thumbnail img, img, .c-post-list__thumb img, .box-image img"
         )
         ref_tag = p.select_one(".product-reference, .reference, [itemprop='sku'], .sku")
 
@@ -589,36 +601,36 @@ async def save_to_database_bulk(products: list):
 # Main Orchestrateur
 # -----------------------------------------------------------------------------
 async def main():
-    log.info("Démarrage du Grand Crawler PrixTN (National)")
+    log.info("Démarrage du Grand Crawler PrixTN (National Complet)")
     if PROXY_URL:
         log.info("Proxy actif : %s", PROXY_URL)
     all_products = []
     fetcher = Fetcher()
     try:
-        # 1. Drest API Store JSON (27 000+ produits)
+        # 1. Drest via API Store JSON (27 000+ produits)
         all_products.extend(await crawl_drest(fetcher))
 
-        # 2. Wamia GraphQL Magento (20 000+ produits)
+        # 2. Wamia via GraphQL Magento (20 000+ produits)
         all_products.extend(await crawl_wamia(fetcher))
 
-        # 3. Mytek GraphQL OpenSearch (12 000+ produits)
+        # 3. Mytek via GraphQL OpenSearch (12 000+ produits)
         sem = asyncio.Semaphore(4)
         all_products.extend(await crawl_mytek(fetcher, sem))
 
-        # 4. Rayons PrestaShop Multi-Pages (SpaceNet, Tunisianet, Yeswikam, Parastore, Batam, Technopro...)
+        # 4. Rayons PrestaShop & WooCommerce (SpaceNet, Tunisianet, 21 Parapharmacies, Batam, Technopro...)
         for target in CATALOG_TARGETS:
             items = await crawl_rayon_prestashop(
                 fetcher, target["source"], target["category"],
                 target["url"], target["max_pages"]
             )
             all_products.extend(items)
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.1)
 
-        # 5. Rayons Sangour (WooCommerce + curl_cffi Chrome TLS)
+        # 5. Rayons Sangour (avec curl_cffi Chrome TLS + Proxy)
         for category, url in SANGOUR_RAYONS:
             items = await crawl_rayon_woocommerce(fetcher, "Sangour", category, url, max_pages=10)
             all_products.extend(items)
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.1)
 
     finally:
         await fetcher.close()
