@@ -391,6 +391,7 @@ async def _sangour_fetch(query: str, client: httpx.AsyncClient) -> list:
     """Store API Sangour. Cloudflare bloque les IP datacenter ; on envoie
     d'abord via le client httpx fourni (qui peut avoir un proxy), puis repli
     curl_cffi (TLS Chrome) - le tout tente de passer par PROXY_URL si present."""
+    import sys
     params = {"search": query, "per_page": 30}
     headers = {"Accept": "application/json"}
     # tentative 1 : httpx (peut porter un proxy si l'API server a PROXY_URL)
@@ -398,8 +399,10 @@ async def _sangour_fetch(query: str, client: httpx.AsyncClient) -> list:
         r = await client.get(SANGOUR_STORE_API, params=params, headers=headers)
         if r.status_code == 200:
             return r.json() or []
-    except Exception:
-        pass
+        print(f"[sangour] httpx -> HTTP {r.status_code}", file=sys.stderr)
+    except Exception as e:
+        print(f"[sangour] httpx -> {type(e).__name__}: {str(e)[:120]}",
+              file=sys.stderr)
     # tentative 2 : curl_cffi avec proxy explicite si dispo
     try:
         from curl_cffi.requests import AsyncSession
@@ -410,8 +413,12 @@ async def _sangour_fetch(query: str, client: httpx.AsyncClient) -> list:
             r2 = await s.get(SANGOUR_STORE_API, params=params, allow_redirects=True)
             if r2.status_code == 200:
                 return r2.json() or []
-    except Exception:
-        pass
+            print(f"[sangour] curl_cffi -> HTTP {r2.status_code} "
+                  f"(proxy={'yes' if _SANGOUR_PROXY else 'no'})",
+                  file=sys.stderr)
+    except Exception as e:
+        print(f"[sangour] curl_cffi -> {type(e).__name__}: {str(e)[:120]}",
+              file=sys.stderr)
     return []
 
 async def scrape_sangour(query: str, client: httpx.AsyncClient) -> list[ProductOffer]:

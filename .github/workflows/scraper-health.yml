@@ -56,7 +56,10 @@ jobs:
 
           async def main():
               failed = {}
-              async with httpx.AsyncClient(timeout=12.0) as client:
+              # On herite de PROXY_URL pour le client httpx partage : Sangour
+              # (Cloudflare) aura sa 1re tentative via le proxy residentiel.
+              proxy = os.getenv("PROXY_URL") or None
+              async with httpx.AsyncClient(timeout=12.0, proxy=proxy) as client:
                   for name, fn in SCRAPERS.items():
                       query = "gel" if name in PARAPHARMACIES else "ventilateur"
                       try:
