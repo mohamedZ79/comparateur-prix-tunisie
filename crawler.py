@@ -1,11 +1,10 @@
 """
-Crawler National PrixTN - Intégration Complète de TOUTES les Parapharmacies + High-Tech + Sangour.
+Crawler National PrixTN - Intégration Complète des 21 Parapharmacies + High-Tech + Sangour.
 """
 import asyncio
 import html as html_lib
 import logging
 import os
-import random
 import re
 import sys
 import unicodedata
@@ -46,7 +45,7 @@ def parse_tnd_price(raw: str) -> Optional[float]:
         return None
     cleaned = unicodedata.normalize("NFKD", str(raw)).strip().lower()
     
-    # Format Carrefour (ex: "249DT000")
+    # Format Carrefour
     m_c = re.search(r'(\d+)\s*(?:dt|tnd|d\.t)\s*(\d{3})', cleaned)
     if m_c:
         return float(f"{m_c.group(1)}.{m_c.group(2)}")
@@ -96,7 +95,7 @@ def extract_title_link(card) -> Optional[Tuple[str, str]]:
     return None
 
 # -----------------------------------------------------------------------------
-# Fetcher Résilient avec repli Chrome TLS (Contourne Cloudflare)
+# Fetcher Résilient
 # -----------------------------------------------------------------------------
 class Fetcher:
     def __init__(self):
@@ -128,7 +127,7 @@ class Fetcher:
                 s = await self._cffi_session()
                 r2 = await s.get(url, allow_redirects=True)
                 if r2.status_code == 200:
-                    log.info("✅ Débloqué via curl_cffi (Chrome TLS) : %s", url)
+                    log.info("✅ Débloqué via curl_cffi : %s", url)
                     return r2.text
                 status = r2.status_code
             except Exception as e:
@@ -182,34 +181,24 @@ class Fetcher:
 # TOUTES LES 21 PARAPHARMACIES + HIGH-TECH DU MARCHÉ TUNISIEN
 # -----------------------------------------------------------------------------
 CATALOG_TARGETS = [
-    # --- 1. LE RÉSEAU NATIONAL DES PARAPHARMACIES (21 Enseignes) ---
+    # 1. PARAPHARMACIES PRESTASHOP (URLs officielles avec controller=search)
     {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/2-accueil?page={page}", "max_pages": 40},
-    {"source": "Parashop", "category": "Parapharmacie", "url": "https://www.parashop.tn/recherche?s=soin&page={page}", "max_pages": 20},
-    {"source": "Pharma-Shop", "category": "Parapharmacie", "url": "https://pharma-shop.tn/recherche?s=soin&page={page}", "max_pages": 20},
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=soin&page={page}", "max_pages": 20},
-    {"source": "Paralabel", "category": "Parapharmacie", "url": "https://www.paralabel.tn/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/recherche?s=soin&page={page}", "max_pages": 20},
-    {"source": "Phytonat", "category": "Parapharmacie", "url": "https://phytonat.tn/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "Para Fendri", "category": "Parapharmacie", "url": "https://parafendri.tn/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "Para House", "category": "Parapharmacie", "url": "https://www.parahouse.tn/fr/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "Para du Bonheur", "category": "Parapharmacie", "url": "https://paradubonheur.tn/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "La Para du Lac", "category": "Parapharmacie", "url": "https://laparadulac.com/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "Taicir Fendri", "category": "Parapharmacie", "url": "https://www.taicir.tn/recherche?s=soin&page={page}", "max_pages": 15},
-    {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?s=soin&page={page}", "max_pages": 20},
-    {"source": "Paraforce", "category": "Parapharmacie", "url": "https://paraforce.tn/recherche?s=soin&page={page}", "max_pages": 15},
-    
-    # Parapharmacies WooCommerce
-    {"source": "Parapharmacie.tn", "category": "Parapharmacie", "url": "https://parapharmacie.tn/?s=soin&post_type=product&paged={page}", "max_pages": 20},
-    {"source": "MaPara Tunisie", "category": "Parapharmacie", "url": "https://www.maparatunisie.tn/?s=soin&post_type=product&paged={page}", "max_pages": 20},
-    {"source": "MS Para", "category": "Parapharmacie", "url": "https://mspara.com/?s=soin&post_type=product&paged={page}", "max_pages": 15},
-    {"source": "Tunisie Para", "category": "Parapharmacie", "url": "https://tunisiepara.com/?s=soin&post_type=product&paged={page}", "max_pages": 15},
-    {"source": "ParaTunisie", "category": "Parapharmacie", "url": "https://www.paratunisie.com/?s=soin&post_type=product&paged={page}", "max_pages": 15},
-    {"source": "ParaHealth", "category": "Parapharmacie", "url": "https://parahealth.tn/?s=soin&post_type=product&paged={page}", "max_pages": 15},
-    {"source": "Paraepharma", "category": "Parapharmacie", "url": "https://paraepharma.com/?s=soin&post_type=product&paged={page}", "max_pages": 15},
-    {"source": "Skincare Para", "category": "Parapharmacie", "url": "https://skincarepara.com/?s=soin&post_type=product&paged={page}", "max_pages": 12},
-    {"source": "Coquette.tn", "category": "Parapharmacie", "url": "https://www.coquette.tn/?s=soin&post_type=product&paged={page}", "max_pages": 12},
+    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/3-visage?page={page}", "max_pages": 25},
+    {"source": "Parashop", "category": "Parapharmacie", "url": "https://www.parashop.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
+    {"source": "Pharma-Shop", "category": "Parapharmacie", "url": "https://pharma-shop.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
+    {"source": "Paralabel", "category": "Parapharmacie", "url": "https://www.paralabel.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 15},
+    {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
+    {"source": "Phytonat", "category": "Parapharmacie", "url": "https://phytonat.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 15},
+    {"source": "Para Fendri", "category": "Parapharmacie", "url": "https://parafendri.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 15},
+    {"source": "Para House", "category": "Parapharmacie", "url": "https://www.parahouse.tn/fr/recherche?controller=search&s=soin&page={page}", "max_pages": 15},
+    {"source": "Para du Bonheur", "category": "Parapharmacie", "url": "https://paradubonheur.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 15},
+    {"source": "La Para du Lac", "category": "Parapharmacie", "url": "https://laparadulac.com/recherche?controller=search&s=soin&page={page}", "max_pages": 15},
+    {"source": "Taicir Fendri", "category": "Parapharmacie", "url": "https://www.taicir.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 15},
+    {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
+    {"source": "Paraforce", "category": "Parapharmacie", "url": "https://paraforce.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 15},
 
-    # --- 2. HIGH-TECH, PC, TÉLÉPHONIE & ÉLECTROMÉNAGER ---
+    # 2. HIGH-TECH & ÉLECTROMÉNAGER PRESTASHOP
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/13-telephonie-tablette?page={page}", "max_pages": 15},
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/14-pc-portable?page={page}", "max_pages": 15},
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/11-informatique?page={page}", "max_pages": 15},
@@ -228,31 +217,29 @@ CATALOG_TARGETS = [
     {"source": "Tunisianet", "category": "Climatisation", "url": "https://www.tunisianet.com.tn/505-climatisation-et-chauffage?page={page}", "max_pages": 12},
     {"source": "Tunisianet", "category": "Beauté & Soins", "url": "https://www.tunisianet.com.tn/690-beaute-et-sante?page={page}", "max_pages": 15},
 
-    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=electromenager&page={page}", "max_pages": 15},
-    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=tv&page={page}", "max_pages": 10},
-    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?s=smartphone&page={page}", "max_pages": 15},
-    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?s=pc+portable&page={page}", "max_pages": 15},
-    {"source": "SBS Informatique", "category": "Gaming & PC", "url": "https://www.sbsinformatique.com/recherche?s=pc+gamer&page={page}", "max_pages": 15},
-    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?s=electromenager&page={page}", "max_pages": 12},
+    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?controller=search&s=electromenager&page={page}", "max_pages": 15},
+    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?controller=search&s=tv&page={page}", "max_pages": 10},
+    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?controller=search&s=smartphone&page={page}", "max_pages": 15},
+    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?controller=search&s=pc+portable&page={page}", "max_pages": 15},
+    {"source": "SBS Informatique", "category": "Gaming & PC", "url": "https://www.sbsinformatique.com/recherche?controller=search&s=pc+gamer&page={page}", "max_pages": 15},
+    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?controller=search&s=electromenager&page={page}", "max_pages": 12},
 ]
 
-# --- 3. SANGOUR (Détergents, Judy, Javel, Cuisine Tramontina, Tefal) ---
-SANGOUR_RAYONS = [
-    ("Maison & Entretien", "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/javel/"),
-    ("Maison & Entretien", "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/sol/"),
-    ("Maison & Entretien", "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/vaisselles/"),
-    ("Maison & Entretien", "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/linge/"),
-    ("Maison & Entretien", "https://sangour.tn/marques/judy/"),
-    ("Maison & Cuisine", "https://sangour.tn/marques/tramontina/"),
-    ("Maison & Cuisine", "https://sangour.tn/marques/tefal/"),
-    ("Maison & Cuisine", "https://sangour.tn/marques/moulinex/"),
-    ("Maison & Cuisine", "https://sangour.tn/categorie-produit/art-de-table-et-cuisine/art-culinaire/cocottes/"),
-    ("Maison & Cuisine", "https://sangour.tn/categorie-produit/art-de-table-et-cuisine/art-culinaire/poeles/"),
-    ("Maison & Cuisine", "https://sangour.tn/categorie-produit/art-de-table-et-cuisine/art-culinaire/casseroles/"),
+# 3. PARAPHARMACIES WOOCOMMERCE (Pagination /page/N/)
+WOOCOMMERCE_TARGETS = [
+    ("Parapharmacie.tn", "Parapharmacie", "https://parapharmacie.tn/", 20),
+    ("MaPara Tunisie", "Parapharmacie", "https://www.maparatunisie.tn/", 20),
+    ("MS Para", "Parapharmacie", "https://mspara.com/", 15),
+    ("Tunisie Para", "Parapharmacie", "https://tunisiepara.com/", 15),
+    ("ParaTunisie", "Parapharmacie", "https://www.paratunisie.com/", 15),
+    ("ParaHealth", "Parapharmacie", "https://parahealth.tn/", 15),
+    ("Paraepharma", "Parapharmacie", "https://paraepharma.com/", 15),
+    ("Skincare Para", "Parapharmacie", "https://skincarepara.com/", 12),
+    ("Coquette.tn", "Parapharmacie", "https://www.coquette.tn/", 12),
 ]
 
 # -----------------------------------------------------------------------------
-# Fonctions de Scraping Asynchrone
+# Fonctions de Scraping
 # -----------------------------------------------------------------------------
 OOS_MARKERS = ("rupture de stock", "en rupture", "épuisé", "epuise", "out of stock", "sold out", "unavailable")
 
@@ -325,188 +312,36 @@ async def crawl_rayon_prestashop(fetcher: Fetcher, source: str, category: str, u
         for items in results:
             products.extend(items)
         page += batch
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.1)
     log.info("[%s] %s : %d produits", source, category, len(products))
     return products
 
-async def crawl_rayon_woocommerce(fetcher: Fetcher, source: str, category: str, base_url: str, max_pages: int = 10, batch: int = 3) -> list:
+async def crawl_woocommerce_search(fetcher: Fetcher, source: str, category: str, base_url: str, max_pages: int = 15, batch: int = 3) -> list:
     products, page = [], 1
     while page <= max_pages:
-        urls = [base_url if p == 1 else f"{base_url}page/{p}/" for p in range(page, page + batch)]
+        urls = [f"{base_url}?s=soin&post_type=product" if p == 1 else f"{base_url}page/{p}/?s=soin&post_type=product" for p in range(page, page + batch)]
         results = await asyncio.gather(*(crawl_page(fetcher, source, category, u) for u in urls))
         if not any(results):
             break
         for items in results:
             products.extend(items)
         page += batch
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.1)
     log.info("[%s] %s : %d produits", source, category, len(products))
     return products
 
 # -----------------------------------------------------------------------------
-# Mytek (API GraphQL OpenSearch - 12 000+ Produits)
+# SANGOUR (Extraction via API Store JSON + Rayons Directs)
 # -----------------------------------------------------------------------------
-MYTEK_GRAPHQL = "https://www.mytek.tn/graphql"
-MYTEK_MEDIA = "https://www.mytek.tn/media/catalog/product"
-
-MYTEK_QUERY = """
-query ($search: String, $page: Int, $pageSize: Int) {
-  opensearchProductSearch(search: $search, page: $page, pageSize: $pageSize) {
-    items { id sku name price special_price final_price image url }
-  }
-}
-"""
-
-MYTEK_KEYWORDS = [
-    "samsung", "iphone", "xiaomi", "infinix", "oppo", "honor",
-    "pc portable", "pc gamer", "imprimante", "ecran", "tablette",
-    "tv", "climatiseur", "refrigerateur", "machine a laver", "micro ondes",
-    "moulinex", "tefal", "aspirateur", "cuisiniere", "cafetiere", "robot",
-    "casque", "souris", "clavier", "disque dur", "bureau", "onduleur"
-]
-
-async def crawl_mytek(fetcher: Fetcher, sem: asyncio.Semaphore) -> list:
-    products = []
-
-    async def crawl_keyword(term: str):
-        page, local = 1, []
-        while page <= 12:
-            payload = {
-                "query": MYTEK_QUERY,
-                "variables": {"search": term, "page": page, "pageSize": 100},
-            }
-            async with sem:
-                body = await fetcher.post_json(MYTEK_GRAPHQL, payload)
-            if not body:
-                break
-            items = ((body.get("data") or {}).get("opensearchProductSearch") or {}).get("items") or []
-            if not items:
-                break
-            for it in items:
-                price = it.get("special_price") or it.get("final_price") or it.get("price")
-                title = (it.get("name") or "").strip()
-                if not title or price is None or float(price) <= 0:
-                    continue
-                img = it.get("image") or ""
-                if img.startswith("/"):
-                    img = MYTEK_MEDIA + img
-                url = it.get("url") or ""
-                if url and not url.startswith("http"):
-                    url = "https://www.mytek.tn/" + url.lstrip("/")
-                local.append({
-                    "source": "Mytek",
-                    "category": "High-Tech",
-                    "title": title,
-                    "sku": it.get("sku"),
-                    "price": round(float(price), 3),
-                    "price_raw": f"{float(price):,.3f} TND",
-                    "url": url,
-                    "image": img or None,
-                    "in_stock": True,
-                })
-            if len(items) < 100:
-                break
-            page += 1
-            await asyncio.sleep(0.1)
-        log.info("[Mytek] mot-clé %-15s : %d produits", term, len(local))
-        return local
-
-    results = await asyncio.gather(*(crawl_keyword(t) for t in MYTEK_KEYWORDS))
-    for r in results:
-        products.extend(r)
-    return products
-
-# -----------------------------------------------------------------------------
-# Wamia (API GraphQL Magento - 20 000+ Produits)
-# -----------------------------------------------------------------------------
-WAMIA_GRAPHQL = "https://www.wamia.tn/graphql"
-WAMIA_BASE = "https://www.wamia.tn/"
-
-WAMIA_CATEGORIES_QUERY = """
-query {
-  categories(filters: {parent_id: {eq: "2"}}) {
-    items { id name product_count }
-  }
-}
-"""
-
-WAMIA_CATEGORY_PRODUCTS_QUERY = """
-query ($filter: ProductAttributeFilterInput, $pageSize: Int!, $page: Int!) {
-  products(filter: $filter, pageSize: $pageSize, currentPage: $page) {
-    items {
-      name
-      sku
-      canonical_url
-      stock_status
-      small_image { url }
-      price_range { minimum_price { regular_price { value currency } } }
-    }
-  }
-}
-"""
-
-async def crawl_wamia(fetcher: Fetcher, max_pages_per_cat: int = 40) -> list:
-    body = await fetcher.post_json(WAMIA_GRAPHQL, {"query": WAMIA_CATEGORIES_QUERY, "variables": {}})
-    cats = ((body or {}).get("data") or {}).get("categories", {}).get("items", [])
-    if not cats:
-        log.warning("[Wamia] Catégories inaccessibles")
-        return []
-
-    products = []
-    for cat in cats:
-        cat_id, cat_name = str(cat.get("id")), cat.get("name") or "Wamia"
-        page, got = 1, 0
-        while page <= max_pages_per_cat:
-            data = await fetcher.post_json(
-                WAMIA_GRAPHQL,
-                {"query": WAMIA_CATEGORY_PRODUCTS_QUERY, "variables": {"filter": {"category_id": {"eq": cat_id}}, "pageSize": 100, "page": page}}
-            )
-            items = ((data or {}).get("data") or {}).get("products", {}).get("items", [])
-            if not items:
-                break
-            for it in items:
-                title = html_lib.unescape((it.get("name") or "")).strip()
-                canonical = (it.get("canonical_url") or "").strip()
-                price = ((it.get("price_range") or {}).get("minimum_price") or {}).get("regular_price", {}).get("value")
-                if not title or not canonical or price is None:
-                    continue
-                try:
-                    price_val = round(float(price), 3)
-                except (TypeError, ValueError):
-                    continue
-                if price_val <= 0:
-                    continue
-                img = ((it.get("small_image") or {}).get("url") or "").strip() or None
-                products.append({
-                    "source": "Wamia",
-                    "category": f"Maison - {cat_name}",
-                    "title": title,
-                    "sku": it.get("sku") or None,
-                    "price": price_val,
-                    "price_raw": f"{price_val:,.3f} TND",
-                    "url": WAMIA_BASE + canonical.lstrip("/"),
-                    "image": img,
-                    "in_stock": it.get("stock_status") == "IN_STOCK",
-                })
-                got += 1
-            if len(items) < 100:
-                break
-            page += 1
-            await asyncio.sleep(0.1)
-        log.info("[Wamia] %-25s : %d produits", cat_name, got)
-    log.info("[Wamia] Total collecté : %d produits", len(products))
-    return products
-
-# -----------------------------------------------------------------------------
-# Drest (API Store WooCommerce JSON - 27 000+ Produits)
-# -----------------------------------------------------------------------------
-async def crawl_drest(fetcher: Fetcher) -> list:
-    products, page, seen = [], 1, set()
-    while page <= DREST_MAX_PAGES:
-        body = await fetcher.get_json("https://drest.tn/wp-json/wc/store/products", params={"per_page": 100, "page": page})
+async def crawl_sangour(fetcher: Fetcher) -> list:
+    log.info("Démarrage du crawl Sangour...")
+    products, seen = [], set()
+    
+    # 1. Tentative API Store JSON (Ultra-rapide)
+    for page in range(1, 30):
+        body = await fetcher.get_json("https://sangour.tn/wp-json/wc/store/products", params={"per_page": 100, "page": page})
         if not body or not isinstance(body, list):
             break
-        new_count = 0
         for it in body:
             pid = it.get("id")
             if pid in seen:
@@ -526,8 +361,8 @@ async def crawl_drest(fetcher: Fetcher) -> list:
                 continue
             images = it.get("images") or []
             products.append({
-                "source": "Drest",
-                "category": "Parapharmacie & Beauté",
+                "source": "Sangour",
+                "category": "Maison & Entretien",
                 "title": title,
                 "sku": it.get("sku") or None,
                 "price": price_val,
@@ -536,114 +371,33 @@ async def crawl_drest(fetcher: Fetcher) -> list:
                 "image": images[0].get("src") if images else None,
                 "in_stock": bool(it.get("is_in_stock")),
             })
-            new_count += 1
-        if new_count == 0:
-            break
-        if page % 25 == 0:
-            log.info("[Drest] page %d : %d produits cumulés", page, len(products))
-        page += 1
-        await asyncio.sleep(0.1)
-    log.info("[Drest] Total collecté : %d produits", len(products))
+
+    # 2. Rayons HTML directs de secours
+    if not products:
+        sangour_urls = [
+            "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/javel/",
+            "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/sol/",
+            "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/vaisselles/",
+            "https://sangour.tn/categorie-produit/hygiene-maison/produits-nettoyage/linge/",
+            "https://sangour.tn/marques/judy/",
+            "https://sangour.tn/marques/tramontina/",
+            "https://sangour.tn/marques/tefal/",
+            "https://sangour.tn/marques/moulinex/",
+        ]
+        for u in sangour_urls:
+            html = await fetcher.get(u)
+            if html:
+                products.extend(parse_products(html, "Sangour", "Maison & Entretien", u))
+
+    log.info("[Sangour] Total collecté : %d produits", len(products))
     return products
 
 # -----------------------------------------------------------------------------
-# Enregistrement PostgreSQL Sécurisé (Anti-Truncation)
+# Mytek & Wamia & Drest (APIs Massives)
 # -----------------------------------------------------------------------------
-UPSERT_QUERY = """
-INSERT INTO products (source, category, title, sku, price, price_raw, url, image, in_stock, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-ON CONFLICT (source, url)
-DO UPDATE SET
-    price      = EXCLUDED.price,
-    price_raw  = EXCLUDED.price_raw,
-    title      = EXCLUDED.title,
-    category   = EXCLUDED.category,
-    sku        = COALESCE(EXCLUDED.sku, products.sku),
-    image      = COALESCE(EXCLUDED.image, products.image),
-    in_stock   = EXCLUDED.in_stock,
-    updated_at = NOW();
-"""
-
-async def save_to_database_bulk(products: list):
-    log.info("Connexion à PostgreSQL Supabase...")
-    conn = await asyncpg.connect(DATABASE_URL)
-    try:
-        unique_map = {}
-        for p in products:
-            unique_map[(p["source"], p["url"])] = p
-        deduped = list(unique_map.values())
-        log.info("Enregistrement de %d produits uniques (sur %d collectés)", len(deduped), len(products))
-
-        batch_size = 200
-        async with conn.transaction():
-            for i in range(0, len(deduped), batch_size):
-                batch = deduped[i:i + batch_size]
-                records = [
-                    (
-                        str(p["source"])[:100],
-                        str(p["category"])[:100],
-                        str(p["title"]),
-                        str(p["sku"])[:140] if p.get("sku") else None,
-                        p["price"],
-                        str(p["price_raw"])[:50] if p.get("price_raw") else None,
-                        p["url"],
-                        p.get("image"),
-                        bool(p.get("in_stock", True))
-                    )
-                    for p in batch
-                ]
-                await conn.executemany(UPSERT_QUERY, records)
-        log.info("🎉 SUCCÈS : %d produits enregistrés dans Supabase !", len(deduped))
-    finally:
-        await conn.close()
-
-# -----------------------------------------------------------------------------
-# Main Orchestrateur
-# -----------------------------------------------------------------------------
-async def main():
-    log.info("Démarrage du Grand Crawler PrixTN (National Complet)")
-    if PROXY_URL:
-        log.info("Proxy actif : %s", PROXY_URL)
-    all_products = []
-    fetcher = Fetcher()
-    try:
-        # 1. Drest via API Store JSON (27 000+ produits)
-        all_products.extend(await crawl_drest(fetcher))
-
-        # 2. Wamia via GraphQL Magento (20 000+ produits)
-        all_products.extend(await crawl_wamia(fetcher))
-
-        # 3. Mytek via GraphQL OpenSearch (12 000+ produits)
-        sem = asyncio.Semaphore(4)
-        all_products.extend(await crawl_mytek(fetcher, sem))
-
-        # 4. Rayons PrestaShop & WooCommerce (SpaceNet, Tunisianet, 21 Parapharmacies, Batam, Technopro...)
-        for target in CATALOG_TARGETS:
-            items = await crawl_rayon_prestashop(
-                fetcher, target["source"], target["category"],
-                target["url"], target["max_pages"]
-            )
-            all_products.extend(items)
-            await asyncio.sleep(0.1)
-
-        # 5. Rayons Sangour (avec curl_cffi Chrome TLS + Proxy)
-        for category, url in SANGOUR_RAYONS:
-            items = await crawl_rayon_woocommerce(fetcher, "Sangour", category, url, max_pages=10)
-            all_products.extend(items)
-            await asyncio.sleep(0.1)
-
-    finally:
-        await fetcher.close()
-
-    log.info("TOTAL GLOBAL COLLECTÉ : %d produits", len(all_products))
-    if not all_products:
-        log.error("Aucun produit collecté.")
-        sys.exit(1)
-    if not DATABASE_URL:
-        log.error("DATABASE_URL absent.")
-        sys.exit(1)
-        
-    await save_to_database_bulk(all_products)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+MYTEK_GRAPHQL = "https://www.mytek.tn/graphql"
+MYTEK_MEDIA = "https://www.mytek.tn/media/catalog/product"
+MYTEK_QUERY = """
+query ($search: String, $page: Int, $pageSize: Int) {
+  opensearchProductSearch(search: $search, page: $page, pageSize: $pageSize) {
+    items { id sku name price spe
