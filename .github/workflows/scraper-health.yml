@@ -31,9 +31,14 @@ jobs:
         run: pytest -q
 
       - name: Smoke test intelligent par catégorie
+        env:
+          # PROXY_URL est necessaire pour Sangour (Cloudflare IP-block).
+          # Sans proxy, Sangour renverra 0 (warning attendu, non bloquant).
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
           python - <<'EOF'
           import asyncio
+          import os
           import httpx
           from scrapers import SCRAPERS, SHOP_CATEGORY
 
@@ -41,6 +46,13 @@ jobs:
           # fantômes désynchronisées - audit F-08) :
           PARAPHARMACIES = {k for k, v in SHOP_CATEGORY.items()
                             if v == "parapharmacie"}
+
+          # Sangour est derriere Cloudflare ; il faut un proxy residentiel.
+          # Si PROXY_URL est absent, Sangour renverra 0 - c'est attendu.
+          if os.getenv("PROXY_URL"):
+              print("PROXY_URL actif : Sangour sera teste via proxy.")
+          else:
+              print("PROXY_URL absent : Sangour (Cloudflare) renverra 0.")
 
           async def main():
               failed = {}
