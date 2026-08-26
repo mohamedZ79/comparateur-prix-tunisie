@@ -1,5 +1,5 @@
 """
-Crawler National PrixTN - Rayons Complets des 21 Parapharmacies + High-Tech + Sangour.
+Crawler National PrixTN - Rayons Complets des 21 Parapharmacies + High-Tech + Cuisine & Art de la Table + Sangour.
 """
 import asyncio
 import html as html_lib
@@ -266,10 +266,10 @@ class Fetcher:
             await self._cffi.close()
 
 # -----------------------------------------------------------------------------
-# TOUS LES RAYONS DES 21 PARAPHARMACIES & HIGH-TECH
+# TOUS LES RAYONS DES 21 PARAPHARMACIES & HIGH-TECH & MAISON
 # -----------------------------------------------------------------------------
 CATALOG_TARGETS = [
-    # --- 1. PARAPHARMACIES PRESTASHOP & SHOPIFY (URLs Corrigées) ---
+    # --- 1. PARAPHARMACIES PRESTASHOP & SHOPIFY ---
     {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/2-accueil?page={page}", "max_pages": 40},
     {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/recherche?s=soin&page={page}", "max_pages": 25},
     {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/categorie/visage?page={page}", "max_pages": 25},
@@ -301,7 +301,7 @@ CATALOG_TARGETS = [
     {"source": "Skincare Para", "category": "Parapharmacie", "url": "https://skincarepara.com/page/{page}/?s=soin&post_type=product", "max_pages": 15},
     {"source": "Coquette.tn", "category": "Parapharmacie", "url": "https://www.coquette.tn/page/{page}/?s=soin&post_type=product", "max_pages": 15},
 
-    # --- 3. HIGH-TECH, ÉLECTROMÉNAGER & TV ---
+    # --- 3. HIGH-TECH, ÉLECTROMÉNAGER, CUISINE & MAISON ---
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/13-telephonie-tablette?page={page}", "max_pages": 20},
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/14-pc-portable?page={page}", "max_pages": 18},
     {"source": "SpaceNet", "category": "High-Tech", "url": "https://spacenet.tn/11-informatique?page={page}", "max_pages": 18},
@@ -309,6 +309,7 @@ CATALOG_TARGETS = [
     {"source": "SpaceNet", "category": "Électroménager", "url": "https://spacenet.tn/18-electromenager?page={page}", "max_pages": 18},
     {"source": "SpaceNet", "category": "Électroménager", "url": "https://spacenet.tn/19-petit-electromenager?page={page}", "max_pages": 18},
     {"source": "SpaceNet", "category": "Climatisation", "url": "https://spacenet.tn/20-climatisation-chauffage?page={page}", "max_pages": 12},
+    {"source": "SpaceNet", "category": "Maison & Cuisine", "url": "https://spacenet.tn/21-art-de-la-table?page={page}", "max_pages": 15},
 
     {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/377-telephone-portable-tunisie?page={page}", "max_pages": 25},
     {"source": "Tunisianet", "category": "High-Tech", "url": "https://www.tunisianet.com.tn/301-pc-portable-tunisie?page={page}", "max_pages": 20},
@@ -318,6 +319,7 @@ CATALOG_TARGETS = [
     {"source": "Tunisianet", "category": "Petit Électro", "url": "https://www.tunisianet.com.tn/440-petit-electromenager-tunisie?page={page}", "max_pages": 20},
     {"source": "Tunisianet", "category": "Climatisation", "url": "https://www.tunisianet.com.tn/505-climatisation-et-chauffage?page={page}", "max_pages": 12},
     {"source": "Tunisianet", "category": "Beauté & Soins", "url": "https://www.tunisianet.com.tn/690-beaute-et-sante?page={page}", "max_pages": 15},
+    {"source": "Tunisianet", "category": "Maison & Cuisine", "url": "https://www.tunisianet.com.tn/441-art-de-la-table-tunisie?page={page}", "max_pages": 15},
 
     {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=electromenager&page={page}", "max_pages": 15},
     {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=tv&page={page}", "max_pages": 10},
@@ -483,11 +485,18 @@ query ($search: String, $page: Int, $pageSize: Int) {
 """
 
 MYTEK_KEYWORDS = [
+    # High-Tech & Téléphonie
     "samsung", "iphone", "xiaomi", "infinix", "oppo", "honor",
     "pc portable", "pc gamer", "imprimante", "ecran", "tablette",
+    "casque", "souris", "clavier", "disque dur", "bureau", "onduleur",
+    
+    # Électroménager
     "tv", "climatiseur", "refrigerateur", "machine a laver", "micro ondes",
     "moulinex", "tefal", "aspirateur", "cuisiniere", "cafetiere", "robot",
-    "casque", "souris", "clavier", "disque dur", "bureau", "onduleur"
+    
+    # Maison, Cuisine & Art de la Table (Tasses, Vaisselle...)
+    "tasse", "mug", "verre", "vaisselle", "assiette", "casserole", "poele",
+    "thermos", "gourde", "bouteille", "art de la table", "service cafe", "cuisine"
 ]
 
 async def crawl_mytek(fetcher: Fetcher, sem: asyncio.Semaphore) -> list:
@@ -516,7 +525,7 @@ async def crawl_mytek(fetcher: Fetcher, sem: asyncio.Semaphore) -> list:
                     url = "https://www.mytek.tn/" + url.lstrip("/")
                 local.append({
                     "source": "Mytek",
-                    "category": "High-Tech",
+                    "category": "High-Tech & Maison",
                     "title": title,
                     "sku": it.get("sku"),
                     "price": round(float(price), 3),
@@ -586,7 +595,7 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
     WAMIA_BASE = "https://www.wamia.tn/"
     products = []
     try:
-        cat_resp = await fetcher.post_json(WAMIA_GQL, {"query": "{ categories(filters: {parent_id: {eq: \"2\"}}) { items { id name } } }"})
+        cat_resp = await fetcher.post_json(WAMIA_GQL, {"query": '{ categories(filters: {parent_id: {eq: "2"}}) { items { id name } } }'})
         cats = ((cat_resp or {}).get("data") or {}).get("categories", {}).get("items", [])
         for cat in cats:
             cat_id, cat_name = str(cat.get("id")), cat.get("name") or "Wamia"
@@ -621,7 +630,7 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
                         })
                 if len(items) < 100:
                     break
-                await asyncio.sleep(0.35)  # Pause anti-503 (Rate Limiting Wamia)
+                await asyncio.sleep(0.35)
     except Exception as e:
         log.warning(f"Erreur Wamia : {e}")
     log.info("[Wamia] Total collecté : %d produits", len(products))
@@ -701,7 +710,7 @@ async def main():
         # 4. Sangour (Store API + Flux RSS)
         all_products.extend(await crawl_sangour(fetcher))
 
-        # 5. Rayons PrestaShop & WooCommerce (21 Parapharmacies + High-Tech)
+        # 5. Rayons PrestaShop & WooCommerce (21 Parapharmacies + High-Tech + Maison)
         for target in CATALOG_TARGETS:
             items = await crawl_rayon(
                 fetcher, target["source"], target["category"],
