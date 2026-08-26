@@ -38,6 +38,21 @@ except ImportError:
     HAS_CFFI = False
 
 # -----------------------------------------------------------------------------
+# Constantes de Filtrage & Parsing
+# -----------------------------------------------------------------------------
+_UI_TEXTS = {
+    "ajouter au panier", "aperçu rapide", "voir le produit", "en savoir plus",
+    "détails", "promo", "nouveau", "rupture de stock", "en stock", "commander",
+    "acheter", "quick view", "add to cart", "view details", "lire la suite",
+    "choisir les options", "sélectionner les options", "select options"
+}
+
+OOS_MARKERS = (
+    "rupture de stock", "en rupture", "épuisé", "epuise",
+    "out of stock", "sold out", "unavailable"
+)
+
+# -----------------------------------------------------------------------------
 # Parsing de Prix & Titres
 # -----------------------------------------------------------------------------
 def parse_tnd_price(raw: str) -> Optional[float]:
@@ -75,23 +90,23 @@ def parse_tnd_price(raw: str) -> Optional[float]:
     return None
 
 def extract_title_link(card) -> Optional[Tuple[str, str]]:
-    """Extrait (titre, href) d'une carte produit, robuste aux themes.
-
-    Certains themes PrestaShop (yeswikam, darty, sbs, parafendri - verifie
-    aout 2026) ne mettent PAS le titre dans le heading : le heading porte
-    la marque ou rien, et le vrai titre vit dans une ancre simple.
-    Strategie : heading si texte >= 10, sinon ancre produit la plus
-    descriptive (liens marque/categorie/UI exclus).
-    """
+    """Extrait (titre, href) d'une carte produit, robuste aux différents CMS."""
     a = card.select_one(
         "h2.product_name a, .product_name a, h2.product-title a, "
         "h3.product-title a, h2.product-name a, a.product-name, "
         ".product-title a, .woocommerce-loop-product__title a, "
-        ".wd-entities-title a, .name a")
+        ".wd-entities-title a, .name a, .product-item-link, .title a, "
+        "h2.woocommerce-loop-product__title"
+    )
     if a:
         text = a.get_text(strip=True)
-        if len(text) >= 10:
-            return text, a.get("href", "")
+        href = a.get("href", "")
+        if not href and a.name != "a":
+            parent_a = a.find_parent("a")
+            if parent_a:
+                href = parent_a.get("href", "")
+        if len(text) >= 6:
+            return text, href
 
     best_text, best_href = "", ""
     for link in card.select("a[href]"):
@@ -101,7 +116,7 @@ def extract_title_link(card) -> Optional[Tuple[str, str]]:
             continue
         if "/marque/" in href or "/brand/" in href or "/manufacturer" in href:
             continue
-        if not text or text.lower() in _UI_TEXTS or len(text) < 10:
+        if not text or text.lower() in _UI_TEXTS or len(text) < 6:
             continue
         if len(text) > len(best_text):
             best_text, best_href = text, href
@@ -110,6 +125,63 @@ def extract_title_link(card) -> Optional[Tuple[str, str]]:
     if a:
         return a.get_text(strip=True), a.get("href", "")
     return None
+
+def detect_in_stock(card) -> bool:
+    el = card.select_one(".out-of-stock, .unavailable, [class*='rupture'], [class*='epuise'], [class*='outofstock'], .stock.unavailable")
+    if el is not None:
+        return False
+    text = card.get_text(" ", strip=True).lower()
+    return not any(m in text for m in OOS_MARKERS)
+
+def parse_products(html: str, source: str, category: str, page_url: str) -> list:
+    products = []
+    soup = BeautifulSoup(html, "html.parser")
+    cards = soup.select(
+        ".product-grid-item, .wd-product, div.product, li.product, "
+        "article.product-miniature, .product-miniature, .product-item, "
+        "div.product-small, .ajax_block_product, .c-post-list, "
+        ".product-card, .product_card, .item-product, .product-layout, "
+        ".product-item-info, .product-box"
+    )
+
+    for p in cards:
+        extracted = extract_title_link(p)
+        price_tag = p.select_one(
+            "ins .woocommerce-Price-amount, ins .amount, .price ins, "
+            ".price .amount, .woocommerce-Price-amount, .price, span.price, "
+            "[itemprop='price'], .product-price, .current-price, .special-price, "
+            "[data-price-type='finalPrice'] .price, .price-box .price, bdi"
+        )
+        img_tag = p.select_one(
+            ".product-element-top img, img.wp-post-image, img.product_image, "
+            ".thumbnail-container img, .product-thumbnail img, img[data-full-size-image-url], "
+            "img[data-src], img.img-fluid, .c-post-list__thumb img, .box-image img, img"
+        )
+        ref_tag = p.select_one(".product-reference, .reference, [itemprop='sku'], .sku")
+
+        if not (extracted and price_tag):
+            continue
+
+        title, href = extracted
+        product_url = urljoin(page_url, href)
+        price_val = parse_tnd_price(price_tag.get_text(strip=True))
+        img_url = (img_tag.get("data-full-size-image-url") or img_tag.get("data-src") or img_tag.get("src")) if img_tag else None
+        ref_val = (ref_tag.get_text(strip=True).replace("Réf :", "").strip() if ref_tag else None)
+        in_stock = detect_in_stock(p)
+
+        if title and price_val and price_val > 0:
+            products.append({
+                "source": source,
+                "category": category,
+                "title": title,
+                "sku": ref_val,
+                "price": price_val,
+                "price_raw": f"{price_val:,.3f} TND",
+                "url": product_url,
+                "image": img_url,
+                "in_stock": in_stock,
+            })
+    return products
 
 # -----------------------------------------------------------------------------
 # Fetcher Résilient
@@ -194,35 +266,27 @@ class Fetcher:
             await self._cffi.close()
 
 # -----------------------------------------------------------------------------
-# TOUS LES RAYONS COMPLETS DES 21 PARAPHARMACIES & HIGH-TECH
+# TOUS LES RAYONS DES 21 PARAPHARMACIES & HIGH-TECH
 # -----------------------------------------------------------------------------
 CATALOG_TARGETS = [
-    # --- 1. RAYONS COMPLETS DES PARAPHARMACIES (Visage, Corps, Cheveux, Solaire, Soins) ---
+    # --- 1. PARAPHARMACIES PRESTASHOP & SHOPIFY (URLs Corrigées) ---
     {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/2-accueil?page={page}", "max_pages": 40},
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/3-visage?page={page}", "max_pages": 30},
-    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/4-corps?page={page}", "max_pages": 25},
-    
-    # Pharma-Shop : 403 Cloudflare sur toutes les pages - retire
-    # (4 rayons supprimes)
-
+    {"source": "Yeswikam", "category": "Parapharmacie", "url": "https://www.yeswikam.com/recherche?s=soin&page={page}", "max_pages": 25},
     {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/categorie/visage?page={page}", "max_pages": 25},
     {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/categorie/corps?page={page}", "max_pages": 20},
     {"source": "Eden Pharma", "category": "Parapharmacie", "url": "https://edenpharma.tn/fr/categorie/cheveux?page={page}", "max_pages": 15},
-
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 25},
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?controller=search&s=visage&page={page}", "max_pages": 20},
-    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?controller=search&s=corps&page={page}", "max_pages": 15},
-
-    {"source": "Parashop", "category": "Parapharmacie", "url": "https://www.parashop.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 25},
-    {"source": "Paralabel", "category": "Parapharmacie", "url": "https://www.paralabel.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=soin&page={page}", "max_pages": 25},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=visage&page={page}", "max_pages": 20},
+    {"source": "Parastore", "category": "Parapharmacie", "url": "https://parastore.tn/recherche?s=corps&page={page}", "max_pages": 15},
+    {"source": "Parashop", "category": "Parapharmacie", "url": "https://www.parashop.tn/recherche?s=soin&page={page}", "max_pages": 25},
+    {"source": "Parashop", "category": "Parapharmacie", "url": "https://www.parashop.tn/recherche?s=visage&page={page}", "max_pages": 20},
+    {"source": "Paralabel", "category": "Parapharmacie", "url": "https://www.paralabel.tn/recherche?s=soin&page={page}", "max_pages": 20},
     {"source": "Para Fendri", "category": "Parapharmacie", "url": "https://parafendri.tn/3-visage?page={page}", "max_pages": 20},
     {"source": "Para Fendri", "category": "Parapharmacie", "url": "https://parafendri.tn/4-corps?page={page}", "max_pages": 20},
-    {"source": "Para House", "category": "Parapharmacie", "url": "https://www.parahouse.tn/fr/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
+    {"source": "Para House", "category": "Parapharmacie", "url": "https://www.parahouse.tn/fr/recherche?s=soin&page={page}", "max_pages": 20},
     {"source": "La Para du Lac", "category": "Parapharmacie", "url": "https://laparadulac.com/collections/visage?page={page}", "max_pages": 20},
-    {"source": "Taicir Fendri", "category": "Parapharmacie", "url": "https://www.taicir.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 20},
-    {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?controller=search&s=soin&page={page}", "max_pages": 25},
-    # Paraforce.tn : domaine mort (NXDOMAIN) - retire
-    # Pharma-Shop : 403 Cloudflare sur toutes les pages - retire
+    {"source": "Taicir Fendri", "category": "Parapharmacie", "url": "https://www.taicir.tn/recherche?s=soin&page={page}", "max_pages": 20},
+    {"source": "MyCare", "category": "Parapharmacie", "url": "https://mycare.tn/recherche?s=soin&page={page}", "max_pages": 25},
 
     # --- 2. PARAPHARMACIES WOOCOMMERCE ---
     {"source": "Parapharmacie.tn", "category": "Parapharmacie", "url": "https://parapharmacie.tn/page/{page}/?s=soin&post_type=product", "max_pages": 25},
@@ -255,71 +319,13 @@ CATALOG_TARGETS = [
     {"source": "Tunisianet", "category": "Climatisation", "url": "https://www.tunisianet.com.tn/505-climatisation-et-chauffage?page={page}", "max_pages": 12},
     {"source": "Tunisianet", "category": "Beauté & Soins", "url": "https://www.tunisianet.com.tn/690-beaute-et-sante?page={page}", "max_pages": 15},
 
-    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?controller=search&s=electromenager&page={page}", "max_pages": 15},
-    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?controller=search&s=tv&page={page}", "max_pages": 10},
-    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?controller=search&s=smartphone&page={page}", "max_pages": 15},
-    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?controller=search&s=pc+portable&page={page}", "max_pages": 15},
-    {"source": "SBS Informatique", "category": "Gaming & PC", "url": "https://www.sbsinformatique.com/recherche?controller=search&s=pc+gamer&page={page}", "max_pages": 15},
-    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?controller=search&s=electromenager&page={page}", "max_pages": 15},
+    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=electromenager&page={page}", "max_pages": 15},
+    {"source": "Batam", "category": "Électroménager", "url": "https://batam.com.tn/recherche?s=tv&page={page}", "max_pages": 10},
+    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?s=smartphone&page={page}", "max_pages": 15},
+    {"source": "Technopro", "category": "High-Tech", "url": "https://www.technopro-online.com/recherche?s=pc+portable&page={page}", "max_pages": 15},
+    {"source": "SBS Informatique", "category": "Gaming & PC", "url": "https://www.sbsinformatique.com/recherche?s=pc+gamer&page={page}", "max_pages": 15},
+    {"source": "Darty TN", "category": "Électroménager", "url": "https://darty.tn/recherche?s=electromenager&page={page}", "max_pages": 15},
 ]
-
-# -----------------------------------------------------------------------------
-# Fonctions de Scraping
-# -----------------------------------------------------------------------------
-OOS_MARKERS = ("rupture de stock", "en rupture", "épuisé", "epuise", "out of stock", "sold out", "unavailable")
-
-def detect_in_stock(card) -> bool:
-    el = card.select_one(".out-of-stock, .unavailable, [class*='rupture'], [class*='epuise'], [class*='outofstock'], .stock.unavailable")
-    if el is not None:
-        return False
-    text = card.get_text(" ", strip=True).lower()
-    return not any(m in text for m in OOS_MARKERS)
-
-def parse_products(html: str, source: str, category: str, page_url: str) -> list:
-    products = []
-    soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select(
-        ".product-grid-item, .wd-product, div.product, li.product, "
-        "article.product-miniature, .product-miniature, .product-item, "
-        "div.product-small, .ajax_block_product, .c-post-list"
-    )
-
-    for p in cards:
-        extracted = extract_title_link(p)
-        price_tag = p.select_one(
-            "ins .woocommerce-Price-amount, ins .amount, .price ins, "
-            ".price .amount, .woocommerce-Price-amount, .price, span.price, "
-            "[itemprop='price'], .product-price, .current-price"
-        )
-        img_tag = p.select_one(
-            ".product-element-top img, img.wp-post-image, img.product_image, "
-            ".thumbnail-container img, .product-thumbnail img, img, .c-post-list__thumb img, .box-image img"
-        )
-        ref_tag = p.select_one(".product-reference, .reference, [itemprop='sku'], .sku")
-
-        if not (extracted and price_tag):
-            continue
-
-        title, href = extracted
-        product_url = urljoin(page_url, href)
-        price_val = parse_tnd_price(price_tag.get_text(strip=True))
-        img_url = (img_tag.get("data-full-size-image-url") or img_tag.get("data-src") or img_tag.get("src")) if img_tag else None
-        ref_val = (ref_tag.get_text(strip=True).replace("Réf :", "").strip() if ref_tag else None)
-        in_stock = detect_in_stock(p)
-
-        if title and price_val and price_val > 0:
-            products.append({
-                "source": source,
-                "category": category,
-                "title": title,
-                "sku": ref_val,
-                "price": price_val,
-                "price_raw": f"{price_val:,.3f} TND",
-                "url": product_url,
-                "image": img_url,
-                "in_stock": in_stock,
-            })
-    return products
 
 async def crawl_page(fetcher: Fetcher, source: str, category: str, url: str) -> list:
     html = await fetcher.get(url)
@@ -328,13 +334,6 @@ async def crawl_page(fetcher: Fetcher, source: str, category: str, url: str) -> 
     return parse_products(html, source, category, url)
 
 def build_url(url_tpl: str, page: int) -> str:
-    """Construit l'URL pour une page donnee.
-
-    WordPress : /page/{page}/ dans le template -> page 1 = URL de base
-    sans /page/1/ (sinon 404 sur la plupart des configs WP).
-    PrestaShop : ?page={page} ou &page={page} -> page 1 = sans le parametre
-    (some themes redirect ?page=1 vers une autre categorie).
-    """
     if page == 1:
         return (url_tpl
                 .replace("/page/{page}/", "/")
@@ -359,15 +358,6 @@ async def crawl_rayon(fetcher: Fetcher, source: str, category: str, url_tpl: str
 # -----------------------------------------------------------------------------
 # SANGOUR (WooCommerce Store API + Flux RSS de repli)
 # -----------------------------------------------------------------------------
-# NOTE (audit 2026) : sangour.tn est derriere Cloudflare avec blocage IP
-# strict. Depuis une IP datacenter (GitHub Actions US, ce serveur), TOUS les
-# endpoints retournent 403 (HTML, /wp-json/wc/store/products, /feed, sitemap).
-# Solution : PROXY_URL doit pointer vers une IP residentielle (Espagne, FR,
-# etc.). La logique ci-dessous essaie d'abord l'API Store JSON (la plus fiable
-# via proxy residentiel, meme astuce que Drest), puis repli sur les flux RSS.
-# Si PROXY_URL est absent, Sangour est saute avec un avertissement clair.
-
-SANGOUR_BASE = "https://sangour.tn"
 SANGOUR_STORE_API = "https://sangour.tn/wp-json/wc/store/products"
 SANGOUR_FEED_URLS = [
     "https://sangour.tn/feed/?post_type=product",
@@ -381,7 +371,6 @@ SANGOUR_FEED_URLS = [
 ]
 
 async def _crawl_sangour_store_api(fetcher: Fetcher, seen: set) -> list:
-    """Crawl via WooCommerce Store API (JSON, ~100 produits/page, 100 pages max)."""
     products = []
     for page in range(1, 101):
         body = await fetcher.get_json(SANGOUR_STORE_API, params={"per_page": 100, "page": page})
@@ -389,7 +378,6 @@ async def _crawl_sangour_store_api(fetcher: Fetcher, seen: set) -> list:
             break
         for it in body:
             try:
-                # prix en unite mineure (cents) comme Drest
                 price_cents = it.get("prices", {}).get("price") or it.get("price")
                 if not price_cents:
                     continue
@@ -404,16 +392,13 @@ async def _crawl_sangour_store_api(fetcher: Fetcher, seen: set) -> list:
                 if not permalink or permalink in seen:
                     continue
                 seen.add(permalink)
-                # extraction d'image (variantes possibles entre versions WC)
                 img = None
                 imgs = it.get("images") or []
                 if imgs and isinstance(imgs, list):
                     img = imgs[0].get("src") or imgs[0].get("thumbnail")
                 title = html_lib.unescape(it.get("name", "")).strip()
-                # type de produit : 'simple' = en stock / 'variation' = variantes
                 ptype = it.get("type", "simple")
                 in_stock = bool(it.get("is_in_stock", True)) and ptype != "external"
-                # categorie : WC Store API renvoie une liste de dicts ou des strings
                 cats = it.get("categories", [])
                 if isinstance(cats, list) and cats:
                     c0 = cats[0]
@@ -439,7 +424,6 @@ async def _crawl_sangour_store_api(fetcher: Fetcher, seen: set) -> list:
     return products
 
 async def _crawl_sangour_rss(fetcher: Fetcher, seen: set) -> list:
-    """Repli : flux RSS produits (toutes categories + quelques marques cles)."""
     products = []
     for f_url in SANGOUR_FEED_URLS:
         xml_text = await fetcher.get(f_url)
@@ -477,13 +461,8 @@ async def _crawl_sangour_rss(fetcher: Fetcher, seen: set) -> list:
 
 async def crawl_sangour(fetcher: Fetcher) -> list:
     log.info("Demarrage du crawl Sangour (Store API + RSS)...")
-    if not PROXY_URL:
-        log.warning("[Sangour] PROXY_URL absent : Cloudflare va bloquer (403). "
-                    "Configurez PROXY_URL (IP residentielle ES/FR) pour activer Sangour.")
     seen, products = set(), []
-    # 1. Store API (WooCommerce JSON) - priorite 1
     products.extend(await _crawl_sangour_store_api(fetcher, seen))
-    # 2. RSS feeds - repli si l'API Store a retourne 0 produit
     if not products:
         log.info("[Sangour] Store API vide, repli sur les flux RSS...")
         products.extend(await _crawl_sangour_rss(fetcher, seen))
@@ -642,7 +621,7 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
                         })
                 if len(items) < 100:
                     break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.35)  # Pause anti-503 (Rate Limiting Wamia)
     except Exception as e:
         log.warning(f"Erreur Wamia : {e}")
     log.info("[Wamia] Total collecté : %d produits", len(products))
@@ -719,10 +698,10 @@ async def main():
         sem = asyncio.Semaphore(4)
         all_products.extend(await crawl_mytek(fetcher, sem))
 
-        # 4. Sangour (Flux XML Produit - Bypasse Cloudflare)
+        # 4. Sangour (Store API + Flux RSS)
         all_products.extend(await crawl_sangour(fetcher))
 
-        # 5. Rayons PrestaShop & WooCommerce (Toutes les 21 Parapharmacies + High-Tech)
+        # 5. Rayons PrestaShop & WooCommerce (21 Parapharmacies + High-Tech)
         for target in CATALOG_TARGETS:
             items = await crawl_rayon(
                 fetcher, target["source"], target["category"],
