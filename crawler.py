@@ -595,14 +595,18 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
     WAMIA_BASE = "https://www.wamia.tn/"
     products = []
     try:
-        cat_resp = await fetcher.post_json(WAMIA_GQL, {"query": '{ categories(filters: {parent_id: {eq: "2"}}) { items { id name } } }'})
+        cat_resp = await fetcher.post_json(
+            WAMIA_GQL, 
+            {"query": '{ categories(filters: {parent_id: {eq: "2"}}) { items { id name } } }'}
+        )
         cats = ((cat_resp or {}).get("data") or {}).get("categories", {}).get("items", [])
+        
         for cat in cats:
             cat_id, cat_name = str(cat.get("id")), cat.get("name") or "Wamia"
-            for page in range(1, 40):
+            for page in range(1, 30):
                 query = f"""
                 query {{
-                  products(filter: {{category_id: {{eq: "{cat_id}"}}}}, pageSize: 100, currentPage: {page}) {{
+                  products(filter: {{category_id: {{eq: "{cat_id}"}}}}, pageSize: 60, currentPage: {page}) {{
                     items {{
                       name
                       sku
@@ -623,12 +627,13 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
                 items = ((r or {}).get("data") or {}).get("products", {}).get("items", [])
                 if not items:
                     break
+                    
                 for it in items:
                     title = html_lib.unescape((it.get("name") or "")).strip()
                     canonical = (it.get("canonical_url") or "").strip()
                     min_p = (it.get("price_range") or {}).get("minimum_price") or {}
                     
-                    # ✅ PRIORITÉ AU PRIX PROMO (final_price), REPLI SUR PRIX INITIAL (regular_price)
+                    # Récupération du prix promo réel
                     price = (min_p.get("final_price") or {}).get("value") or (min_p.get("regular_price") or {}).get("value")
                     
                     if title and canonical and price and float(price) > 0:
@@ -644,11 +649,16 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
                             "image": img,
                             "in_stock": it.get("stock_status") == "IN_STOCK",
                         })
-                if len(items) < 100:
+                        
+                if len(items) < 60:
                     break
-                await asyncio.sleep(0.35)
+                    
+                # Pause indispensable pour ne plus avoir de 503
+                await asyncio.sleep(0.4)
+                
     except Exception as e:
         log.warning(f"Erreur Wamia : {e}")
+        
     log.info("[Wamia] Total collecté : %d produits", len(products))
     return products
 # -----------------------------------------------------------------------------
