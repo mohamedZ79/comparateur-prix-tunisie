@@ -603,7 +603,19 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
                 query = f"""
                 query {{
                   products(filter: {{category_id: {{eq: "{cat_id}"}}}}, pageSize: 100, currentPage: {page}) {{
-                    items {{ name sku canonical_url stock_status small_image {{ url }} price_range {{ minimum_price {{ regular_price {{ value }} }} }} }}
+                    items {{
+                      name
+                      sku
+                      canonical_url
+                      stock_status
+                      small_image {{ url }}
+                      price_range {{
+                        minimum_price {{
+                          final_price {{ value }}
+                          regular_price {{ value }}
+                        }}
+                      }}
+                    }}
                   }}
                 }}
                 """
@@ -614,7 +626,11 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
                 for it in items:
                     title = html_lib.unescape((it.get("name") or "")).strip()
                     canonical = (it.get("canonical_url") or "").strip()
-                    price = ((it.get("price_range") or {}).get("minimum_price") or {}).get("regular_price", {}).get("value")
+                    min_p = (it.get("price_range") or {}).get("minimum_price") or {}
+                    
+                    # ✅ PRIORITÉ AU PRIX PROMO (final_price), REPLI SUR PRIX INITIAL (regular_price)
+                    price = (min_p.get("final_price") or {}).get("value") or (min_p.get("regular_price") or {}).get("value")
+                    
                     if title and canonical and price and float(price) > 0:
                         img = (it.get("small_image") or {}).get("url")
                         products.append({
@@ -635,7 +651,6 @@ async def crawl_wamia(fetcher: Fetcher) -> list:
         log.warning(f"Erreur Wamia : {e}")
     log.info("[Wamia] Total collecté : %d produits", len(products))
     return products
-
 # -----------------------------------------------------------------------------
 # Enregistrement PostgreSQL Sécurisé
 # -----------------------------------------------------------------------------
